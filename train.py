@@ -22,9 +22,11 @@ from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
 from metrics.image_metrics import eval_images
 from utils import slice_trajdict_with_t, cfg_to_dict, seed, sample_tensors
+from models.bisim import BisimModel  # Import the bisimulation model
 
 warnings.filterwarnings("ignore")
 log = logging.getLogger(__name__)
+
 
 class Trainer:
     def __init__(self, cfg):
@@ -126,7 +128,7 @@ class Trainer:
             x: torch.utils.data.DataLoader(
                 self.datasets[x],
                 batch_size=self.cfg.gpu_batch_size,
-                shuffle=False, # already shuffled in TrajSlicerDataset
+                shuffle=False,  # already shuffled in TrajSlicerDataset
                 num_workers=self.cfg.env.num_workers,
                 collate_fn=None,
             )
@@ -144,13 +146,16 @@ class Trainer:
         self.proprio_encoder = None
         self.predictor = None
         self.decoder = None
+        self.bisim_model = None  # Initialize bisim_model as None
         self.train_encoder = self.cfg.model.train_encoder
         self.train_predictor = self.cfg.model.train_predictor
         self.train_decoder = self.cfg.model.train_decoder
-        log.info(f"Train encoder, predictor, decoder:\
-            {self.cfg.model.train_encoder}\
-            {self.cfg.model.train_predictor}\
-            {self.cfg.model.train_decoder}")
+        self.train_bisim = self.cfg.model.get('train_bisim', True)  # Control training of bisimulation model
+        log.info(f"Train encoder, predictor, decoder, bisim:\
+            {self.cfg.model.train_encoder},\
+            {self.cfg.model.train_predictor},\
+            {self.cfg.model.train_decoder},\
+            {self.train_bisim}")
 
         self._keys_to_save = [
             "epoch",
@@ -165,6 +170,11 @@ class Trainer:
         )
         self._keys_to_save += (
             ["decoder", "decoder_optimizer"] if self.train_decoder else []
+        )
+        self._keys_to_save += (
+            ["bisim_model", "bisim_optimizer"]
+            if self.train_bisim and self.cfg.get('has_bisim', False)
+            else []
         )
         self._keys_to_save += ["action_encoder", "proprio_encoder"]
 
@@ -246,7 +256,7 @@ class Trainer:
         else:
             decoder_scale = 16  # from vqvae
             num_side_patches = self.cfg.img_size // decoder_scale
-            num_patches = num_side_patches**2
+            num_patches = num_side_patches ** 2
 
         if self.cfg.concat_dim == 0:
             num_patches += 2
@@ -258,11 +268,11 @@ class Trainer:
                     num_patches=num_patches,
                     num_frames=self.cfg.num_hist,
                     dim=self.encoder.emb_dim
-                    + (
-                        proprio_emb_dim * self.cfg.num_proprio_repeat
-                        + action_emb_dim * self.cfg.num_action_repeat
-                    )
-                    * (self.cfg.concat_dim),
+                        + (
+                                proprio_emb_dim * self.cfg.num_proprio_repeat
+                                + action_emb_dim * self.cfg.num_action_repeat
+                        )
+                        * (self.cfg.concat_dim),
                 )
             if not self.train_predictor:
                 for param in self.predictor.parameters():
@@ -289,8 +299,38 @@ class Trainer:
             if not self.train_decoder:
                 for param in self.decoder.parameters():
                     param.requires_grad = False
-        self.encoder, self.predictor, self.decoder = self.accelerator.prepare(
-            self.encoder, self.predictor, self.decoder
+
+        # Initialize bisimulation model
+        if self.cfg.get('has_bisim', False):
+            if self.bisim_model is None:
+                if self.encoder.latent_ndim == 1:  # if feature is 1D
+                    input_dim = self.encoder.emb_dim
+                else:
+                    decoder_scale = 16  # from vqvae
+                    num_side_patches = self.cfg.img_size // decoder_scale
+                    num_patches = num_side_patches ** 2
+                    input_dim = num_patches * self.encoder.emb_dim
+
+                print(
+                    f"DEBUG - Initializing BisimModel with: encoder.latent_ndim={self.encoder.latent_ndim}, encoder.emb_dim={self.encoder.emb_dim}")
+                print(f"DEBUG - Calculated values: img_size={self.cfg.img_size}, decoder_scale={decoder_scale}")
+                print(f"DEBUG - Calculated values: num_side_patches={num_side_patches}, num_patches={num_patches}")
+                print(f"DEBUG - Final input_dim for BiSim model: {input_dim}")
+
+                self.bisim_model = BisimModel(
+                    input_dim=input_dim,
+                    latent_dim=self.cfg.get('bisim_latent_dim', 64),
+                    hidden_dim=self.cfg.get('bisim_hidden_dim', 256),
+                    action_dim=self.cfg.action_emb_dim,
+                )
+                log.info(f"Initialized bisimulation model with latent dim {self.cfg.get('bisim_latent_dim', 64)}")
+
+            if not self.train_bisim:
+                for param in self.bisim_model.parameters():
+                    param.requires_grad = False
+
+        self.encoder, self.predictor, self.decoder, self.bisim_model = self.accelerator.prepare(
+            self.encoder, self.predictor, self.decoder, self.bisim_model
         )
         self.model = hydra.utils.instantiate(
             self.cfg.model,
@@ -299,11 +339,14 @@ class Trainer:
             action_encoder=self.action_encoder,
             predictor=self.predictor,
             decoder=self.decoder,
+            bisim_model=self.bisim_model,
             proprio_dim=proprio_emb_dim,
             action_dim=action_emb_dim,
             concat_dim=self.cfg.concat_dim,
             num_action_repeat=self.cfg.num_action_repeat,
             num_proprio_repeat=self.cfg.num_proprio_repeat,
+            bisim_coef=self.cfg.get('bisim_coef', 1.0),
+            train_bisim=self.train_bisim,
         )
 
     def init_optimizers(self):
@@ -312,6 +355,14 @@ class Trainer:
             lr=self.cfg.training.encoder_lr,
         )
         self.encoder_optimizer = self.accelerator.prepare(self.encoder_optimizer)
+
+        if self.cfg.get('has_bisim', False) and self.train_bisim:
+            self.bisim_optimizer = torch.optim.Adam(
+                self.bisim_model.parameters(),
+                lr=self.cfg.training.get('bisim_lr', 1e-4),
+            )
+            self.bisim_optimizer = self.accelerator.prepare(self.bisim_optimizer)
+
         if self.cfg.has_predictor:
             self.predictor_optimizer = torch.optim.AdamW(
                 self.predictor.parameters(),
@@ -380,8 +431,8 @@ class Trainer:
                 ckpt_path, model_name, model_epoch = self.save_ckpt()
                 # main thread only: launch planning jobs on the saved ckpt
                 if (
-                    self.cfg.plan_settings.plan_cfg_path is not None
-                    and ckpt_path is not None
+                        self.cfg.plan_settings.plan_cfg_path is not None
+                        and ckpt_path is not None
                 ):  # ckpt_path is only not None for main process
                     from plan import build_plan_cfg_dicts, launch_plan_jobs
 
@@ -441,7 +492,7 @@ class Trainer:
 
     def train(self):
         for i, data in enumerate(
-            tqdm(self.dataloaders["train"], desc=f"Epoch {self.epoch} Train")
+                tqdm(self.dataloaders["train"], desc=f"Epoch {self.epoch} Train")
         ):
             obs, act, state = data
             plot = i == 0  # only plot from the first batch
@@ -456,6 +507,8 @@ class Trainer:
             if self.cfg.has_predictor:
                 self.predictor_optimizer.zero_grad()
                 self.action_encoder_optimizer.zero_grad()
+            if self.cfg.get('has_bisim', False) and self.train_bisim:
+                self.bisim_optimizer.zero_grad()
 
             self.accelerator.backward(loss)
 
@@ -466,6 +519,8 @@ class Trainer:
             if self.cfg.has_predictor and self.model.train_predictor:
                 self.predictor_optimizer.step()
                 self.action_encoder_optimizer.step()
+            if self.cfg.get('has_bisim', False) and self.train_bisim:
+                self.bisim_optimizer.step()
 
             loss = self.accelerator.gather_for_metrics(loss).mean()
 
@@ -480,7 +535,7 @@ class Trainer:
                     z_gt = self.model.encode_obs(obs)
                     z_tgt = slice_trajdict_with_t(z_gt, start_idx=self.model.num_pred)
 
-                    state_tgt = state[:, -self.model.num_hist :]  # (b, num_hist, dim)
+                    state_tgt = state[:, -self.model.num_hist:]  # (b, num_hist, dim)
                     err_logs = self.err_eval(z_obs_out, z_tgt)
 
                     err_logs = self.accelerator.gather_for_metrics(err_logs)
@@ -493,7 +548,7 @@ class Trainer:
 
                 if visual_out is not None:
                     for t in range(
-                        self.cfg.num_hist, self.cfg.num_hist + self.cfg.num_pred
+                            self.cfg.num_hist, self.cfg.num_hist + self.cfg.num_pred
                     ):
                         img_pred_scores = eval_images(
                             visual_out[:, t - self.cfg.num_pred], obs["visual"][:, t]
@@ -553,7 +608,7 @@ class Trainer:
 
         self.accelerator.wait_for_everyone()
         for i, data in enumerate(
-            tqdm(self.dataloaders["valid"], desc=f"Epoch {self.epoch} Valid")
+                tqdm(self.dataloaders["valid"], desc=f"Epoch {self.epoch} Valid")
         ):
             obs, act, state = data
             plot = i == 0
@@ -576,7 +631,7 @@ class Trainer:
                     z_gt = self.model.encode_obs(obs)
                     z_tgt = slice_trajdict_with_t(z_gt, start_idx=self.model.num_pred)
 
-                    state_tgt = state[:, -self.model.num_hist :]  # (b, num_hist, dim)
+                    state_tgt = state[:, -self.model.num_hist:]  # (b, num_hist, dim)
                     err_logs = self.err_eval(z_obs_out, z_tgt)
 
                     err_logs = self.accelerator.gather_for_metrics(err_logs)
@@ -589,7 +644,7 @@ class Trainer:
 
                 if visual_out is not None:
                     for t in range(
-                        self.cfg.num_hist, self.cfg.num_hist + self.cfg.num_pred
+                            self.cfg.num_hist, self.cfg.num_hist + self.cfg.num_pred
                     ):
                         img_pred_scores = eval_images(
                             visual_out[:, t - self.cfg.num_pred], obs["visual"][:, t]
@@ -630,7 +685,7 @@ class Trainer:
             self.logs_update(loss_components)
 
     def openloop_rollout(
-        self, dset, num_rollout=10, rand_start_end=True, min_horizon=2, mode="train"
+            self, dset, num_rollout=10, rand_start_end=True, min_horizon=2, mode="train"
     ):
         np.random.seed(self.cfg.training.seed)
         min_horizon = min_horizon + self.cfg.num_hist
@@ -669,11 +724,11 @@ class Trainer:
 
             for k in obs.keys():
                 obs[k] = obs[k][
-                    start : 
-                    start + horizon * self.cfg.frameskip + 1 : 
-                    self.cfg.frameskip
-                ]
-            act = act[start : start + horizon * self.cfg.frameskip]
+                         start:
+                         start + horizon * self.cfg.frameskip + 1:
+                         self.cfg.frameskip
+                         ]
+            act = act[start: start + horizon * self.cfg.frameskip]
             act = rearrange(act, "(h f) d -> h (f d)", f=self.cfg.frameskip)
 
             obs_g = {}
@@ -691,9 +746,26 @@ class Trainer:
                         obs[k][:n_past].unsqueeze(0).to(self.device)
                     )  # unsqueeze for batch, (b, t, c, h, w)
 
-                z_obses, z = self.model.rollout(obs_0, actions)
-                z_obs_last = slice_trajdict_with_t(z_obses, start_idx=-1, end_idx=None)
-                div_loss = self.err_eval_single(z_obs_last, z_g)
+                # Check if we're using bisimulation model
+                if self.cfg.get('has_bisim', False):
+                    z_obses, z, z_bisim = self.model.rollout(obs_0, actions)
+                    z_obs_last = slice_trajdict_with_t(z_obses, start_idx=-1, end_idx=None)
+                    div_loss = self.err_eval_single(z_obs_last, z_g)
+
+                    # Also calculate bisimulation distance
+                    z_bisim_last = z_bisim[:, -1:, :]
+                    z_bisim_g = self.model.encode_bisim(z_g)
+                    bisim_dist = torch.norm(z_bisim_last - z_bisim_g, dim=-1).mean()
+
+                    log_key = f"bisim_dist_rollout{postfix}"
+                    if log_key in logs:
+                        logs[log_key].append(bisim_dist.item())
+                    else:
+                        logs[log_key] = [bisim_dist.item()]
+                else:
+                    z_obses, z = self.model.rollout(obs_0, actions)
+                    z_obs_last = slice_trajdict_with_t(z_obses, start_idx=-1, end_idx=None)
+                    div_loss = self.err_eval_single(z_obs_last, z_g)
 
                 for k in div_loss.keys():
                     log_key = f"z_{k}_err_rollout{postfix}"
@@ -745,14 +817,14 @@ class Trainer:
         self.epoch_log = OrderedDict()
 
     def plot_samples(
-        self,
-        gt_imgs,
-        pred_imgs,
-        reconstructed_gt_imgs,
-        epoch,
-        batch,
-        num_samples=2,
-        phase="train",
+            self,
+            gt_imgs,
+            pred_imgs,
+            reconstructed_gt_imgs,
+            epoch,
+            batch,
+            num_samples=2,
+            phase="train",
     ):
         """
         input:  gt_imgs, reconstructed_gt_imgs: (b, num_hist + num_pred, 3, img_size, img_size)

@@ -16,17 +16,17 @@ from torchvision import utils
 
 class PlanEvaluator:  # evaluator for planning
     def __init__(
-        self,
-        obs_0,
-        obs_g,
-        state_0,
-        state_g,
-        env,
-        wm,
-        frameskip,
-        seed,
-        preprocessor,
-        n_plot_samples,
+            self,
+            obs_0,
+            obs_g,
+            state_0,
+            state_g,
+            env,
+            wm,
+            frameskip,
+            seed,
+            preprocessor,
+            n_plot_samples,
     ):
         self.obs_0 = obs_0
         self.obs_g = obs_g
@@ -39,6 +39,9 @@ class PlanEvaluator:  # evaluator for planning
         self.preprocessor = preprocessor
         self.n_plot_samples = n_plot_samples
         self.device = next(wm.parameters()).device
+
+        # Check if the world model has a bisimulation model
+        self.has_bisim = hasattr(self.wm, 'has_bisim') and self.wm.has_bisim
 
         self.plot_full = False  # plot all frames or frames after frameskip
 
@@ -80,11 +83,11 @@ class PlanEvaluator:  # evaluator for planning
         result = data.clone()  # Clone to preserve the original tensor
         for i in range(data.shape[0]):
             if length[i] != np.inf:
-                result[i, int(length[i]) :] = 0
+                result[i, int(length[i]):] = 0
         return result
 
     def eval_actions(
-        self, actions, action_len=None, filename="output", save_video=False
+            self, actions, action_len=None, filename="output", save_video=False
     ):
         """
         actions: detached torch tensors on cuda
@@ -117,8 +120,8 @@ class PlanEvaluator:  # evaluator for planning
         e_visuals = e_obses["visual"]
         e_final_obs = self._get_trajdict_last(e_obses, action_len * self.frameskip + 1)
         e_final_state = self._get_traj_last(e_states, action_len * self.frameskip + 1)[
-            :, 0
-        ]  # reduce dim back
+                        :, 0
+                        ]  # reduce dim back
 
         # compute eval metrics
         logs, successes = self._compute_rollout_metrics(
@@ -159,7 +162,8 @@ class PlanEvaluator:  # evaluator for planning
         successes = eval_results['success']
 
         logs = {
-            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(value.astype(float))
+            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(
+                value.astype(float))
             for key, value in eval_results.items()
         }
 
@@ -183,10 +187,29 @@ class PlanEvaluator:  # evaluator for planning
             "mean_div_proprio_emb": div_proprio_emb,
         })
 
+        # Add bisimulation metrics if available
+        if self.has_bisim:
+            with torch.no_grad():
+                # Get bisimulation embeddings for predicted and goal states
+                e_bisim = self.wm.encode_bisim(e_z_obs)
+                i_bisim = self.wm.encode_bisim(i_z_obs)
+                goal_obs = move_to_device(self.preprocessor.transform_obs(self.obs_g), self.device)
+                goal_z_obs = self.wm.encode_obs(goal_obs)
+                goal_bisim = self.wm.encode_bisim(goal_z_obs)
+
+                # Calculate bisimulation distances
+                bisim_to_goal_dist = torch.norm(e_bisim - goal_bisim, dim=-1).mean().item()
+                bisim_pred_dist = torch.norm(e_bisim - i_bisim, dim=-1).mean().item()
+
+                logs.update({
+                    "mean_bisim_to_goal_dist": bisim_to_goal_dist,
+                    "mean_bisim_pred_dist": bisim_pred_dist,
+                })
+
         return logs, successes
 
     def _plot_rollout_compare(
-        self, e_visuals, i_visuals, successes, save_video=False, filename=""
+            self, e_visuals, i_visuals, successes, save_video=False, filename=""
     ):
         """
         i_visuals may have less frames than e_visuals due to frameskip, so pad accordingly
@@ -245,7 +268,7 @@ class PlanEvaluator:  # evaluator for planning
 
         n_columns = e_visuals.shape[1]
         assert (
-            i_visuals.shape[1] == n_columns
+                i_visuals.shape[1] == n_columns
         ), f"Rollout lengths do not match, {e_visuals.shape[1]} and {i_visuals.shape[1]}"
 
         # add a goal column

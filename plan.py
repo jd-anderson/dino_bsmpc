@@ -32,14 +32,16 @@ ALL_MODEL_KEYS = [
     "action_encoder",
 ]
 
+
 def planning_main_in_dir(working_dir, cfg_dict):
     os.chdir(working_dir)
     return planning_main(cfg_dict=cfg_dict)
 
+
 def launch_plan_jobs(
-    epoch,
-    cfg_dicts,
-    plan_output_dir,
+        epoch,
+        cfg_dicts,
+        plan_output_dir,
 ):
     with submitit.helpers.clean_env():
         jobs = []
@@ -67,14 +69,14 @@ def launch_plan_jobs(
 
 
 def build_plan_cfg_dicts(
-    plan_cfg_path="",
-    ckpt_base_path="",
-    model_name="",
-    model_epoch="final",
-    planner=["gd", "cem"],
-    goal_source=["dset"],
-    goal_H=[1, 5, 10],
-    alpha=[0, 0.1, 1],
+        plan_cfg_path="",
+        ckpt_base_path="",
+        model_name="",
+        model_epoch="final",
+        planner=["gd", "cem"],
+        goal_source=["dset"],
+        goal_H=[1, 5, 10],
+        alpha=[0, 0.1, 1],
 ):
     """
     Return a list of plan overrides, for model_path, add a key in the dict {"model_path": model_path}.
@@ -110,14 +112,14 @@ def build_plan_cfg_dicts(
 
 class PlanWorkspace:
     def __init__(
-        self,
-        cfg_dict: dict,
-        wm: torch.nn.Module,
-        dset,
-        env: SubprocVectorEnv,
-        env_name: str,
-        frameskip: int,
-        wandb_run: wandb.run,
+            self,
+            cfg_dict: dict,
+            wm: torch.nn.Module,
+            dset,
+            env: SubprocVectorEnv,
+            env_name: str,
+            frameskip: int,
+            wandb_run: wandb.run,
     ):
         self.cfg_dict = cfg_dict
         self.wm = wm
@@ -170,7 +172,7 @@ class PlanWorkspace:
         )
 
         if self.wandb_run is None or isinstance(
-            self.wandb_run, wandb.sdk.lib.disabled.RunDisabled
+                self.wandb_run, wandb.sdk.lib.disabled.RunDisabled
         ):
             self.wandb_run = DummyWandbRun()
 
@@ -201,7 +203,7 @@ class PlanWorkspace:
         states = []
         actions = []
         observations = []
-        
+
         if self.goal_source == "random_state":
             # update env config from val trajs
             observations, states, actions, env_info = (
@@ -213,7 +215,7 @@ class PlanWorkspace:
             rand_init_state, rand_goal_state = self.env.sample_random_init_goal_states(
                 self.eval_seed
             )
-            if self.env_name == "deformable_env": # take rand init state from dset for deformable envs
+            if self.env_name == "deformable_env":  # take rand init state from dset for deformable envs
                 rand_init_state = np.array([x[0] for x in states])
 
             obs_0, state_0 = self.env.prepare(self.eval_seed, rand_init_state)
@@ -285,11 +287,11 @@ class PlanWorkspace:
             state = state.numpy()
             offset = random.randint(0, max_offset)
             obs = {
-                key: arr[offset : offset + traj_len]
+                key: arr[offset: offset + traj_len]
                 for key, arr in obs.items()
             }
-            state = state[offset : offset + traj_len]
-            act = act[offset : offset + self.frameskip * self.goal_H]
+            state = state[offset: offset + traj_len]
+            act = act[offset: offset + self.frameskip * self.goal_H]
             actions.append(act)
             states.append(state)
             observations.append(obs)
@@ -393,6 +395,28 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
     elif not train_cfg.has_decoder:
         result["decoder"] = None
 
+    # Check if we need the bisimulation model
+    if train_cfg.get('has_bisim', False) and "bisim_model" not in result:
+        from models.bisim import BisimModel
+
+        if result["encoder"].latent_ndim == 1:  # if feature is 1D
+            input_dim = result["encoder"].emb_dim
+        else:
+            decoder_scale = 16  # from vqvae
+            num_side_patches = train_cfg.img_size // decoder_scale
+            num_patches = num_side_patches ** 2
+            input_dim = num_patches * result["encoder"].emb_dim
+
+        result["bisim_model"] = BisimModel(
+            input_dim=input_dim,
+            latent_dim=train_cfg.get('bisim_latent_dim', 64),
+            hidden_dim=train_cfg.get('bisim_hidden_dim', 256),
+            action_dim=train_cfg.action_emb_dim,
+        )
+        print(f"Created new bisimulation model with latent dim {train_cfg.get('bisim_latent_dim', 64)}")
+    elif not train_cfg.get('has_bisim', False):
+        result["bisim_model"] = None
+
     model = hydra.utils.instantiate(
         train_cfg.model,
         encoder=result["encoder"],
@@ -400,11 +424,14 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
         action_encoder=result["action_encoder"],
         predictor=result["predictor"],
         decoder=result["decoder"],
+        bisim_model=result.get("bisim_model", None),
         proprio_dim=train_cfg.proprio_emb_dim,
         action_dim=train_cfg.action_emb_dim,
         concat_dim=train_cfg.concat_dim,
         num_action_repeat=num_action_repeat,
         num_proprio_repeat=train_cfg.num_proprio_repeat,
+        bisim_coef=train_cfg.get('bisim_coef', 1.0),
+        train_bisim=train_cfg.model.get('train_bisim', True),
     )
     model.to(device)
     return model
@@ -454,7 +481,7 @@ def planning_main(cfg_dict):
 
     num_action_repeat = model_cfg.num_action_repeat
     model_ckpt = (
-        Path(model_path) / "checkpoints" / f"model_{cfg_dict['model_epoch']}.pth"
+            Path(model_path) / "checkpoints" / f"model_{cfg_dict['model_epoch']}.pth"
     )
     model = load_model(model_ckpt, model_cfg, num_action_repeat, device=device)
 
