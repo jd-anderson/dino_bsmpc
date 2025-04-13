@@ -141,6 +141,7 @@ class PlanWorkspace:
 
         objective_fn = hydra.utils.call(
             cfg_dict["objective"],
+            wm=self.wm,
         )
 
         self.data_preprocessor = Preprocessor(

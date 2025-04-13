@@ -39,11 +39,10 @@ class PlanEvaluator:  # evaluator for planning
         self.preprocessor = preprocessor
         self.n_plot_samples = n_plot_samples
         self.device = next(wm.parameters()).device
-
-        # Check if the world model has a bisimulation model
-        self.has_bisim = hasattr(self.wm, 'has_bisim') and self.wm.has_bisim
-
-        self.plot_full = False  # plot all frames or frames after frameskip
+        self.plot_full = False  # whether to plot all frames or just keyframes
+        
+        # Check if world model has bisimulation capabilities
+        self.has_bisim = hasattr(wm, 'has_bisim') and wm.has_bisim
 
     def assign_init_cond(self, obs_0, state_0):
         self.obs_0 = obs_0
@@ -105,10 +104,16 @@ class PlanEvaluator:  # evaluator for planning
             self.preprocessor.transform_obs(self.obs_g), self.device
         )
         with torch.no_grad():
-            i_z_obses, _ = self.wm.rollout(
+            # Handle both cases: with and without bisimulation
+            rollout_result = self.wm.rollout(
                 obs_0=trans_obs_0,
                 act=actions,
             )
+            # Check if the result includes bisimulation embeddings
+            if len(rollout_result) == 3:
+                i_z_obses, _, _ = rollout_result  # Unpack and ignore extra outputs
+            else:
+                i_z_obses, _ = rollout_result
         i_final_z_obs = self._get_trajdict_last(i_z_obses, action_len + 1)
 
         # rollout in env

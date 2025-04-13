@@ -105,12 +105,23 @@ class CEMPlanner(BasePlanner):
                 )
                 action[0] = mu[traj]  # optional: make the first one mu itself
                 with torch.no_grad():
-                    i_z_obses, i_zs = self.wm.rollout(
+                    # Update to handle both cases: with and without bisimulation
+                    rollout_result = self.wm.rollout(
                         obs_0=cur_trans_obs_0,
                         act=action,
                     )
+                    # Handle the case when bisimulation is enabled (3 return values)
+                    if len(rollout_result) == 3:
+                        i_z_obses, i_zs, _ = rollout_result  # Ignore bisimulation embeddings
+                    else:
+                        i_z_obses, i_zs = rollout_result
 
                 loss = self.objective_fn(i_z_obses, cur_z_obs_g)
+                
+                # Ensure loss has the right dimensionality (num_samples,)
+                if loss.ndim > 1:
+                    loss = loss.mean(dim=tuple(range(1, loss.ndim)))
+                
                 topk_idx = torch.argsort(loss)[: self.topk]
                 topk_action = action[topk_idx]
                 losses.append(loss[topk_idx[0]].item())
