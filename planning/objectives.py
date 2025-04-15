@@ -56,10 +56,14 @@ def create_objective_fn(alpha, base, mode="last", use_bisim=False, bisim_weight=
         if wm is not None and hasattr(wm, 'has_bisim') and wm.has_bisim:
             # Use the world model's encode_bisim function
             encode_bisim = wm.encode_bisim
+            # print(f"BISIM PLANNING: Using bisimulation loss with weight {bisim_weight} (mode=last)")
 
             # Compute bisimulation embeddings and distance
             bisim_pred = encode_bisim({"visual": z_obs_pred["visual"][:, -1:], "proprio": z_obs_pred["proprio"][:, -1:]})
             bisim_tgt = encode_bisim({"visual": z_obs_tgt["visual"], "proprio": z_obs_tgt["proprio"]})
+            
+            # print(f"BISIM PLANNING: Using bisimulation embeddings of dimension {bisim_pred.shape[-1]}")
+            # print(f"BISIM PLANNING: Predicted state shape={bisim_pred.shape}, target state shape={bisim_tgt.shape}")
 
             # Calculate L2 distance in bisimulation space - ensure it returns a scalar per batch element
             if len(bisim_pred.shape) > 2:  # If it has more than 2 dimensions [batch, timestep, ...]
@@ -67,6 +71,10 @@ def create_objective_fn(alpha, base, mode="last", use_bisim=False, bisim_weight=
                 bisim_loss = bisim_loss.mean(dim=1)  # Mean across timesteps if multiple
             else:
                 bisim_loss = torch.norm(bisim_pred - bisim_tgt, dim=-1)  # Shape: [batch]
+
+            # Log loss statistics
+            # print(f"BISIM PLANNING: Loss stats - std_loss min/max/mean: {std_loss.min().item():.4f}/{std_loss.max().item():.4f}/{std_loss.mean().item():.4f}")
+            # print(f"BISIM PLANNING: Loss stats - bisim_loss min/max/mean: {bisim_loss.min().item():.4f}/{bisim_loss.max().item():.4f}/{bisim_loss.mean().item():.4f}")
 
             # Combine losses
             loss = std_loss + bisim_weight * bisim_loss
@@ -127,6 +135,7 @@ def create_objective_fn(alpha, base, mode="last", use_bisim=False, bisim_weight=
         if wm is not None and hasattr(wm, 'has_bisim') and wm.has_bisim:
             # Use the world model's encode_bisim function
             encode_bisim = wm.encode_bisim
+            # print(f"BISIM PLANNING: Using bisimulation loss with weight {bisim_weight} (mode=all)")
 
             # Compute bisimulation embeddings for each timestep
             bisim_pred_all = []
@@ -147,6 +156,8 @@ def create_objective_fn(alpha, base, mode="last", use_bisim=False, bisim_weight=
             # Stack tensors
             bisim_pred = torch.stack(bisim_pred_all, dim=1)
             bisim_tgt = torch.stack(bisim_tgt_all, dim=1)
+            
+            # print(f"BISIM PLANNING: Stacked predictions shape: {bisim_pred.shape}")
 
             # Calculate L2 distance in bisimulation space - ensure it returns a scalar per batch element
             if len(bisim_pred.shape) > 2:  # If it has more than 2 dimensions [batch, timestep, ...]
@@ -156,6 +167,10 @@ def create_objective_fn(alpha, base, mode="last", use_bisim=False, bisim_weight=
 
             # Apply coefficients
             bisim_loss = (bisim_dist * coeffs).mean(dim=1)
+            
+            # Log loss statistics
+            # print(f"BISIM PLANNING: Loss stats - std_loss min/max/mean: {std_loss.min().item():.4f}/{std_loss.max().item():.4f}/{std_loss.mean().item():.4f}")
+            # print(f"BISIM PLANNING: Loss stats - bisim_loss min/max/mean: {bisim_loss.min().item():.4f}/{bisim_loss.max().item():.4f}/{bisim_loss.mean().item():.4f}")
 
             # Combine losses
             loss = std_loss + bisim_weight * bisim_loss

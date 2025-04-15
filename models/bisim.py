@@ -62,13 +62,10 @@ class BisimModel(nn.Module):
         output: z_bisim: (b, t, bisim_dim)
         """
         b, t, p, d = z_dino.shape
-        # print(f"DEBUG - BisimModel.encode input dimensions: {z_dino.shape}, will be reshaped to ({b*t}, {p*d})")
+        # print(f"BISIM ENCODE: DinoV2 shape={z_dino.shape}, features={p*d}, bisim_dim={self.latent_dim}")
         z_dino = z_dino.reshape(b * t, p * d)
-        # print(f"DEBUG - BisimModel.encode reshaped input: {z_dino.shape}")
         z_bisim = self.encoder(z_dino)
-        # print(f"DEBUG - BisimModel.encode output before reshape: {z_bisim.shape}")
         z_bisim = z_bisim.reshape(b, t, self.latent_dim)
-        # print(f"DEBUG - BisimModel.encode final output: {z_bisim.shape}")
         return z_bisim
     
     def next(self, z_bisim, action_emb):
@@ -78,11 +75,10 @@ class BisimModel(nn.Module):
                action_emb: (b, action_emb_dim)
         output: next_z_bisim: (b, bisim_dim)
         """
-        # print(f"DEBUG - BisimModel.next input dimensions: z_bisim {z_bisim.shape}, action_emb {action_emb.shape}")
+        # print(f"BISIM NEXT: Bisim state shape={z_bisim.shape}, dim={z_bisim.shape[-1]}, action shape={action_emb.shape}")
         x = torch.cat([z_bisim, action_emb], dim=-1)
-        # print(f"DEBUG - BisimModel.next concatenated input: {x.shape}")
         result = self.dynamics(x)
-        # print(f"DEBUG - BisimModel.next output: {result.shape}")
+        # print(f"BISIM NEXT: Output next state shape={result.shape}, dim={result.shape[-1]}")
         return result
     
     def predict_reward(self, z_bisim, action_emb):
@@ -102,6 +98,9 @@ class BisimModel(nn.Module):
         Calculate bisimulation loss
         bisimulation metric: d(s1,s2) = |r(s1) - r(s2)| + γ · d(P(s1), P(s2))
         """
+        # print(f"BISIM LOSS CALC: State dim={z_bisim.shape[-1]}, calculating bisimilarity metric")
+        # print(f"BISIM LOSS CALC: z_bisim={z_bisim.shape}, next_z_bisim={next_z_bisim.shape}")
+        
         # Compute distance between current states
         z_dist = torch.sum(F.smooth_l1_loss(z_bisim, z_bisim2, reduction="none"), dim=-1)
         
@@ -116,5 +115,7 @@ class BisimModel(nn.Module):
         
         # Bisimulation loss
         bisim_loss = (z_dist - target_bisimilarity).pow(2)
+        
+        # print(f"BISIM LOSS CALC: Final bisim loss shape={bisim_loss.shape}")
         
         return bisim_loss 

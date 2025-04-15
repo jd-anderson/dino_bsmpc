@@ -43,6 +43,12 @@ class PlanEvaluator:  # evaluator for planning
         
         # Check if world model has bisimulation capabilities
         self.has_bisim = hasattr(wm, 'has_bisim') and wm.has_bisim
+        if self.has_bisim:
+            # print(f"EVALUATOR: Using world model with bisimulation (latent_dim={wm.bisim_latent_dim})")
+            pass
+        else:
+            # print("EVALUATOR: Using standard world model without bisimulation")
+            pass
 
     def assign_init_cond(self, obs_0, state_0):
         self.obs_0 = obs_0
@@ -111,7 +117,8 @@ class PlanEvaluator:  # evaluator for planning
             )
             # Check if the result includes bisimulation embeddings
             if len(rollout_result) == 3:
-                i_z_obses, _, _ = rollout_result  # Unpack and ignore extra outputs
+                i_z_obses, _, bisim_embeds = rollout_result  # Unpack and get bisimulation embeddings
+                # print(f"EVALUATOR: Rollout produced bisimulation embeddings with shape {bisim_embeds.shape}")
             else:
                 i_z_obses, _ = rollout_result
         i_final_z_obs = self._get_trajdict_last(i_z_obses, action_len + 1)
@@ -172,6 +179,7 @@ class PlanEvaluator:  # evaluator for planning
             for key, value in eval_results.items()
         }
 
+        # Print success rate and evaluation results
         print("Success rate: ", logs['success_rate'])
         print(eval_results)
 
@@ -194,6 +202,7 @@ class PlanEvaluator:  # evaluator for planning
 
         # Add bisimulation metrics if available
         if self.has_bisim:
+            # print("EVALUATOR: Computing bisimulation metrics for evaluation")
             with torch.no_grad():
                 # Get bisimulation embeddings for predicted and goal states
                 e_bisim = self.wm.encode_bisim(e_z_obs)
@@ -205,6 +214,8 @@ class PlanEvaluator:  # evaluator for planning
                 # Calculate bisimulation distances
                 bisim_to_goal_dist = torch.norm(e_bisim - goal_bisim, dim=-1).mean().item()
                 bisim_pred_dist = torch.norm(e_bisim - i_bisim, dim=-1).mean().item()
+                
+                # print(f"EVALUATOR: Bisimulation distance metrics - to_goal: {bisim_to_goal_dist:.4f}, pred_vs_actual: {bisim_pred_dist:.4f}")
 
                 logs.update({
                     "mean_bisim_to_goal_dist": bisim_to_goal_dist,

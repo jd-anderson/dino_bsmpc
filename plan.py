@@ -130,6 +130,21 @@ class PlanWorkspace:
         self.wandb_run = wandb_run
         self.device = next(wm.parameters()).device
 
+        # Check if world model has bisimulation
+        has_bisim = hasattr(wm, 'has_bisim') and wm.has_bisim
+        # print("\n" + "="*80)
+        if has_bisim:
+            # print(f"PLAN BISIM LOG: Loaded world model WITH bisimulation capabilities")
+            # print(f"PLAN BISIM LOG: Bisimulation model: {wm.bisim_model}")
+            # print(f"PLAN BISIM LOG: Bisimulation latent dim: {wm.bisim_latent_dim}")
+            # print(f"PLAN BISIM LOG: Bisimulation coefficient: {wm.bisim_coef}")
+            # print(f"PLAN BISIM LOG: Training bisimulation: {getattr(wm, 'train_bisim', 'Unknown')}")
+            pass
+        else:
+            # print(f"PLAN BISIM LOG: Loaded world model WITHOUT bisimulation capabilities")
+            pass
+        # print("="*80 + "\n")
+
         # have different seeds for each planning instances
         self.eval_seed = [cfg_dict["seed"] * n + 1 for n in range(cfg_dict["n_evals"])]
         print("eval_seed: ", self.eval_seed)
@@ -435,6 +450,7 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
         train_bisim=train_cfg.model.get('train_bisim', True),
     )
     model.to(device)
+
     return model
 
 

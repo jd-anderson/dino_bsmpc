@@ -230,15 +230,14 @@ class VWorldModel(nn.Module):
         if not self.has_bisim:
             return None
 
-        # Debug prints for dimensions
-        # print(f"DEBUG - encode_bisim input visual dimensions: {z_dino['visual'].shape}")
-        # print(f"DEBUG - encode_bisim input proprio dimensions: {z_dino['proprio'].shape}")
+        # Add focused log to confirm encoder is being called
+        # print(f"BISIM ENCODER: Called encode_bisim with visual shape {z_dino['visual'].shape}")
 
         # Use only visual embeddings for bisimulation
         z_bisim = self.bisim_model.encode(z_dino["visual"])
 
-        # Debug print for output dimensions
-        # print(f"DEBUG - encode_bisim output dimensions: {z_bisim.shape}")
+        # Log output dimensions
+        # print(f"BISIM ENCODER: Output bisimulation embeddings shape: {z_bisim.shape}")
 
         return z_bisim
 
@@ -253,11 +252,13 @@ class VWorldModel(nn.Module):
             return None
 
         b, t, d = z_bisim.shape
+        # print(f"BISIM PREDICTION: Input bisim state shape: {z_bisim.shape}, dim={d}")
         z_bisim_flat = z_bisim.reshape(b * t, d)
         action_emb_flat = action_emb.reshape(b * t, -1)
 
         next_z_bisim = self.bisim_model.next(z_bisim_flat, action_emb_flat)
         next_z_bisim = next_z_bisim.reshape(b, t, d)
+        # print(f"BISIM PREDICTION: Output next bisim state shape: {next_z_bisim.shape}, dim={d}")
 
         return next_z_bisim
 
@@ -449,6 +450,8 @@ class VWorldModel(nn.Module):
         # If using bisimulation, also return bisimulation embeddings
         if self.has_bisim:
             z_bisim = self.encode_bisim(z_obses)
+            # print(f"ROLLOUT COMPLETE: Returning with bisimulation embeddings of shape {z_bisim.shape}, dim={z_bisim.shape[-1]}")
             return z_obses, z, z_bisim
 
+        # print("ROLLOUT COMPLETE: Returning without bisimulation embeddings")
         return z_obses, z
