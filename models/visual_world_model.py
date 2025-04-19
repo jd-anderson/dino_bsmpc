@@ -368,9 +368,9 @@ class VWorldModel(nn.Module):
         loss_components = {}
         z = self.encode(obs, act)
         z_src = z[:, : self.num_hist, :, :]  # (b, num_hist, num_patches, dim)
-        z_tgt = z[:, self.num_pred:, :, :]  # (b, num_pred, num_patches, dim)
+        z_tgt = z[:, self.num_pred:, :, :]  # (b, num_hist, num_patches, dim)
         visual_src = obs['visual'][:, : self.num_hist, ...]  # (b, num_hist, 3, img_size, img_size)
-        visual_tgt = obs['visual'][:, self.num_pred:, ...]  # (b, num_pred, 3, img_size, img_size)
+        visual_tgt = obs['visual'][:, self.num_pred:, ...]  # (b, num_hist, 3, img_size, img_size)
 
         # Process embeddings with bisimulation if available
         if self.has_bisim:
@@ -382,7 +382,7 @@ class VWorldModel(nn.Module):
             z_bisim_tgt = self.encode_bisim(z_obs_tgt)
 
             # Get bisimulation next 
-            next_z_bisim_src = z_bisim_src[:, 1:, ...] + z_bisim_tgt[:, 0, ...]
+            next_z_bisim_src = z_bisim_tgt
 
             # Calculate bisimulation loss
             bisim_loss = self.calc_bisim_loss(
