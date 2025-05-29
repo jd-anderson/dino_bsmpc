@@ -41,7 +41,10 @@ def point_maze(maze_str):
     default.geom(friction=".5 .1 .1", density="1000", margin="0.002", condim="1", contype="2", conaffinity="1")
 
     asset = mjcmodel.root.asset()
-    asset.texture(type="2d",name="groundplane",builtin="checker",rgb1="0.2 0.3 0.4",rgb2="0.1 0.2 0.3",width=100,height=100)
+    # buildin texture: flat, checker, gradient (default: None)
+    asset.texture(type="2d", name="groundplane", builtin="checker", rgb1="0.2 0.3 0.4", rgb2="0.1 0.2 0.3", width=100,
+                  height=100)
+    # asset.texture(type="2d",name="groundplane",builtin="gradient",rgb1="0.2 0.3 0.4",rgb2="0.1 0.2 0.3",width=100,height=100)
     asset.texture(name="skybox",type="skybox",builtin="gradient",rgb1=".4 .6 .8",rgb2="0 0 0",
                width="800",height="800",mark="random",markrgb="1 1 1")
     asset.material(name="groundplane",texture="groundplane",texrepeat="20 20")

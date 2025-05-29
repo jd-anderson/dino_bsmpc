@@ -16,17 +16,17 @@ from torchvision import utils
 
 class PlanEvaluator:  # evaluator for planning
     def __init__(
-        self,
-        obs_0,
-        obs_g,
-        state_0,
-        state_g,
-        env,
-        wm,
-        frameskip,
-        seed,
-        preprocessor,
-        n_plot_samples,
+            self,
+            obs_0,
+            obs_g,
+            state_0,
+            state_g,
+            env,
+            wm,
+            frameskip,
+            seed,
+            preprocessor,
+            n_plot_samples,
     ):
         self.obs_0 = obs_0
         self.obs_g = obs_g
@@ -39,8 +39,16 @@ class PlanEvaluator:  # evaluator for planning
         self.preprocessor = preprocessor
         self.n_plot_samples = n_plot_samples
         self.device = next(wm.parameters()).device
-
-        self.plot_full = False  # plot all frames or frames after frameskip
+        self.plot_full = False  # whether to plot all frames or just keyframes
+        
+        # Check if world model has bisimulation capabilities
+        self.has_bisim = hasattr(wm, 'has_bisim') and wm.has_bisim
+        if self.has_bisim:
+            # print(f"EVALUATOR: Using world model with bisimulation (latent_dim={wm.bisim_latent_dim})")
+            pass
+        else:
+            # print("EVALUATOR: Using standard world model without bisimulation")
+            pass
 
     def assign_init_cond(self, obs_0, state_0):
         self.obs_0 = obs_0
@@ -80,11 +88,11 @@ class PlanEvaluator:  # evaluator for planning
         result = data.clone()  # Clone to preserve the original tensor
         for i in range(data.shape[0]):
             if length[i] != np.inf:
-                result[i, int(length[i]) :] = 0
+                result[i, int(length[i]):] = 0
         return result
 
     def eval_actions(
-        self, actions, action_len=None, filename="output", save_video=False
+            self, actions, action_len=None, filename="output", save_video=False
     ):
         """
         actions: detached torch tensors on cuda
@@ -102,10 +110,17 @@ class PlanEvaluator:  # evaluator for planning
             self.preprocessor.transform_obs(self.obs_g), self.device
         )
         with torch.no_grad():
-            i_z_obses, _ = self.wm.rollout(
+            # Handle both cases: with and without bisimulation
+            rollout_result = self.wm.rollout(
                 obs_0=trans_obs_0,
                 act=actions,
             )
+            # Check if the result includes bisimulation embeddings
+            if len(rollout_result) == 3:
+                i_z_obses, _, bisim_embeds = rollout_result  # Unpack and get bisimulation embeddings
+                # print(f"EVALUATOR: Rollout produced bisimulation embeddings with shape {bisim_embeds.shape}")
+            else:
+                i_z_obses, _ = rollout_result
         i_final_z_obs = self._get_trajdict_last(i_z_obses, action_len + 1)
 
         # rollout in env
@@ -117,8 +132,8 @@ class PlanEvaluator:  # evaluator for planning
         e_visuals = e_obses["visual"]
         e_final_obs = self._get_trajdict_last(e_obses, action_len * self.frameskip + 1)
         e_final_state = self._get_traj_last(e_states, action_len * self.frameskip + 1)[
-            :, 0
-        ]  # reduce dim back
+                        :, 0
+                        ]  # reduce dim back
 
         # compute eval metrics
         logs, successes = self._compute_rollout_metrics(
@@ -159,10 +174,12 @@ class PlanEvaluator:  # evaluator for planning
         successes = eval_results['success']
 
         logs = {
-            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(value.astype(float))
+            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(
+                value.astype(float))
             for key, value in eval_results.items()
         }
 
+        # Print success rate and evaluation results
         print("Success rate: ", logs['success_rate'])
         print(eval_results)
 
@@ -183,10 +200,32 @@ class PlanEvaluator:  # evaluator for planning
             "mean_div_proprio_emb": div_proprio_emb,
         })
 
+        # Add bisimulation metrics if available
+        if self.has_bisim:
+            # print("EVALUATOR: Computing bisimulation metrics for evaluation")
+            with torch.no_grad():
+                # Get bisimulation embeddings for predicted and goal states
+                e_bisim = self.wm.encode_bisim(e_z_obs)
+                i_bisim = self.wm.encode_bisim(i_z_obs)
+                goal_obs = move_to_device(self.preprocessor.transform_obs(self.obs_g), self.device)
+                goal_z_obs = self.wm.encode_obs(goal_obs)
+                goal_bisim = self.wm.encode_bisim(goal_z_obs)
+
+                # Calculate bisimulation distances
+                bisim_to_goal_dist = torch.norm(e_bisim - goal_bisim, dim=-1).mean().item()
+                bisim_pred_dist = torch.norm(e_bisim - i_bisim, dim=-1).mean().item()
+                
+                # print(f"EVALUATOR: Bisimulation distance metrics - to_goal: {bisim_to_goal_dist:.4f}, pred_vs_actual: {bisim_pred_dist:.4f}")
+
+                logs.update({
+                    "mean_bisim_to_goal_dist": bisim_to_goal_dist,
+                    "mean_bisim_pred_dist": bisim_pred_dist,
+                })
+
         return logs, successes
 
     def _plot_rollout_compare(
-        self, e_visuals, i_visuals, successes, save_video=False, filename=""
+            self, e_visuals, i_visuals, successes, save_video=False, filename=""
     ):
         """
         i_visuals may have less frames than e_visuals due to frameskip, so pad accordingly
@@ -245,7 +284,7 @@ class PlanEvaluator:  # evaluator for planning
 
         n_columns = e_visuals.shape[1]
         assert (
-            i_visuals.shape[1] == n_columns
+                i_visuals.shape[1] == n_columns
         ), f"Rollout lengths do not match, {e_visuals.shape[1]} and {i_visuals.shape[1]}"
 
         # add a goal column

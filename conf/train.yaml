@@ -31,8 +31,8 @@ hydra:
 
 training:
   seed: 0
-  epochs: 100
-  batch_size: 32 # should >= nodes * tasks_per_node
+  epochs: 50
+  batch_size: 20 # should >= nodes * tasks_per_node
   save_every_x_epoch: 1
   reconstruct_every_x_batch: 500
   num_reconstruct_samples: 6
@@ -40,6 +40,7 @@ training:
   decoder_lr: 3e-4
   predictor_lr: 5e-4
   action_encoder_lr: 5e-4
+  bisim_lr: 3e-4  # Learning rate for bisimulation model
 
 img_size: 224 # should be a multiple of 224
 frameskip: 5
@@ -55,6 +56,12 @@ num_action_repeat: 1
 proprio_emb_dim: 10 
 num_proprio_repeat: 1
 
+# bisimulation model settings
+has_bisim: True  # Enable bisimulation model
+bisim_latent_dim: 64  # Latent dimension for bisimulation model
+bisim_hidden_dim: 256  # Hidden dimension for bisimulation model
+bisim_coef: 1.0  # Coefficient for bisimulation loss
+
 num_hist: 3
 num_pred: 1 # only supports 1
 has_predictor: True # set this to False for only training a decoder
@@ -68,6 +75,7 @@ model:
   train_encoder: False
   train_predictor: True
   train_decoder: True
+  train_bisim: True  # Control whether to train the bisimulation model
 
 debug: False 
 
