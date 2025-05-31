@@ -308,7 +308,6 @@ class VWorldModel(nn.Module):
         )
 
         return bisim_loss
-<<<<<<< HEAD
     
     
     # mod 1 function on BSMPC
@@ -356,8 +355,6 @@ class VWorldModel(nn.Module):
         )
 
         return bisim_loss
-=======
->>>>>>> main
 
     def forward(self, obs, act):
         """
@@ -370,21 +367,8 @@ class VWorldModel(nn.Module):
         loss = 0
         loss_components = {}
         z = self.encode(obs, act)
-        z_src = z[:, : self.num_hist, :, :]  # (b, num_hist, num_patches, dim)
-        z_tgt = z[:, self.num_pred:, :, :]  # (b, num_hist, num_patches, dim)
-        visual_src = obs['visual'][:, : self.num_hist, ...]  # (b, num_hist, 3, img_size, img_size)
-        visual_tgt = obs['visual'][:, self.num_pred:, ...]  # (b, num_hist, 3, img_size, img_size)
+        z_uments/dino_bsmpc # put absolute path here. Checkpoints will be loaded from ${ckpt_ba  z_bisim_tgt = self.encode_bisim(z_obs_tgt)
 
-        # Process embeddings with bisimulation if available
-        if self.has_bisim:
-            z_obs_src, z_act_src = self.separate_emb(z_src)
-            z_obs_tgt, z_act_tgt = self.separate_emb(z_tgt)
-
-            # Get bisimulation embeddings
-            z_bisim_src = self.encode_bisim(z_obs_src)
-            z_bisim_tgt = self.encode_bisim(z_obs_tgt)
-
-<<<<<<< HEAD
             # Get bisimulation next 
             next_z_bisim_src = z_bisim_tgt
 
@@ -392,11 +376,6 @@ class VWorldModel(nn.Module):
             bisim_loss = self.calc_bisim_loss(
                 z_bisim_src,
                 next_z_bisim_src,
-=======
-            # Calculate bisimulation loss
-            bisim_loss = self.calc_bisim_loss(
-                z_bisim_src,
->>>>>>> main
                 self.encode_act(act[:, : self.num_hist])
             ).mean()
 
