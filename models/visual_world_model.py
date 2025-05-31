@@ -308,6 +308,7 @@ class VWorldModel(nn.Module):
         )
 
         return bisim_loss
+<<<<<<< HEAD
     
     
     # mod 1 function on BSMPC
@@ -355,6 +356,8 @@ class VWorldModel(nn.Module):
         )
 
         return bisim_loss
+=======
+>>>>>>> main
 
     def forward(self, obs, act):
         """
@@ -381,6 +384,7 @@ class VWorldModel(nn.Module):
             z_bisim_src = self.encode_bisim(z_obs_src)
             z_bisim_tgt = self.encode_bisim(z_obs_tgt)
 
+<<<<<<< HEAD
             # Get bisimulation next 
             next_z_bisim_src = z_bisim_tgt
 
@@ -388,6 +392,11 @@ class VWorldModel(nn.Module):
             bisim_loss = self.calc_bisim_loss(
                 z_bisim_src,
                 next_z_bisim_src,
+=======
+            # Calculate bisimulation loss
+            bisim_loss = self.calc_bisim_loss(
+                z_bisim_src,
+>>>>>>> main
                 self.encode_act(act[:, : self.num_hist])
             ).mean()
 
