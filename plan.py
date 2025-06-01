@@ -476,7 +476,8 @@ def planning_main(cfg_dict):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if cfg_dict["wandb_logging"]:
         wandb_run = wandb.init(
-            project=f"plan_{cfg_dict['planner']['name']}", config=cfg_dict
+            project=f"plan_{cfg_dict['planner']['name']}", config=cfg_dict,
+                mode="disabled" # mode="disabled" added for automated sweeping 
         )
         wandb.run.name = "{}".format(output_dir.split("plan_outputs/")[-1])
     else:
