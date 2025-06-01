@@ -29,17 +29,6 @@ class BisimModel(nn.Module):
         # Encoder from DinoV2 embeddings to bisimulation space
         self.encoder = build_mlp(input_dim, hidden_dim, latent_dim, num_hidden_layers)
         
-        # mod 1 function on BSMPC
-        '''
-        # Dynamics model to predict next state in bisimulation space
-        self.dynamics = build_mlp(
-            latent_dim + action_dim,  # latent state + action embedding
-            hidden_dim,
-            latent_dim,
-            num_hidden_layers=1,
-        )
-        '''
-        
         # Reward predictor
         self.reward = build_mlp(
             latent_dim + action_dim,  # latent state + action embedding
