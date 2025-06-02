@@ -472,12 +472,12 @@ class DummyWandbRun:
 
 
 def planning_main(cfg_dict):
+
     output_dir = cfg_dict["saved_folder"]
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     if cfg_dict["wandb_logging"]:
         wandb_run = wandb.init(
-            project=f"plan_{cfg_dict['planner']['name']}", config=cfg_dict,
-                mode="disabled" # mode="disabled" added for automated sweeping 
+            project=f"plan_{cfg_dict['planner']['name']}", config=cfg_dict, mode="disabled" # mode="disabled" added for automated sweeping 
         )
         wandb.run.name = "{}".format(output_dir.split("plan_outputs/")[-1])
     else:
@@ -487,6 +487,7 @@ def planning_main(cfg_dict):
     model_path = f"{ckpt_base_path}/outputs/{cfg_dict['model_name']}/"
     with open(os.path.join(model_path, "hydra.yaml"), "r") as f:
         model_cfg = OmegaConf.load(f)
+    
 
     seed(cfg_dict["seed"])
     _, dset = hydra.utils.call(
@@ -515,6 +516,17 @@ def planning_main(cfg_dict):
             ]
         )
     else:
+        # MOD1: add background change to the kwargs for point maze env
+        if 'point_maze_env' in cfg_dict:
+            if 'background' in cfg_dict['point_maze_env']:
+                if cfg_dict['point_maze_env']['background'] == 'slight_change':
+                    model_cfg.env['name']='point_maze_slight_change'
+                elif cfg_dict['point_maze_env']['background'] == 'gradient':
+                    model_cfg.env['name']='point_maze_gradient'
+                else:
+                    pass
+        #
+
         env = SubprocVectorEnv(
             [
                 lambda: gym.make(
