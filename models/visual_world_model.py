@@ -262,7 +262,7 @@ class VWorldModel(nn.Module):
 
         return next_z_bisim
 
-    def calc_bisim_loss(self, z_bisim, action_emb, reward=None, discount=0.99):
+    def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, reward=None, discount=0.99):
         """
         Calculate bisimulation loss
         input: z_bisim: (b, t, bisim_dim)
@@ -298,8 +298,6 @@ class VWorldModel(nn.Module):
 
         reward2 = reward.clone()[perm]
 
-        # Predict next states
-        next_z_bisim = self.predict_next_bisim(z_bisim, action_emb)
         next_z_bisim2 = next_z_bisim.clone()[perm]
 
         # Calculate bisimulation loss
