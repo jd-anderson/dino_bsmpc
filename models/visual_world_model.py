@@ -262,51 +262,6 @@ class VWorldModel(nn.Module):
 
         return next_z_bisim
 
-    def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, reward=None, discount=0.99):
-        """
-        Calculate bisimulation loss
-        input: z_bisim: (b, t, bisim_dim)
-               action_emb: (b, t, action_emb_dim)
-               reward: (b, t, 1) or None (will be predicted)
-        output: bisim_loss: (b, t)
-        """
-        if not self.has_bisim:
-            return torch.tensor(0.0, device=z_bisim.device)
-
-        b, t, d = z_bisim.shape
-        batch_size = b
-
-        # Debug prints for dimensions
-        # print(f"DEBUG - calc_bisim_loss input z_bisim dimensions: {z_bisim.shape}")
-        # print(f"DEBUG - calc_bisim_loss input action_emb dimensions: {action_emb.shape}")
-
-        # Permute batch for comparison
-        perm = torch.randperm(batch_size, device=z_bisim.device)
-        z_bisim2 = z_bisim[:, :, :].clone()[perm]
-
-        # Predict rewards if not provided
-        if reward is None:
-            z_bisim_flat = z_bisim.reshape(b * t, d)
-            action_emb_flat = action_emb.reshape(b * t, -1)
-
-            # Debug prints for flattened dimensions
-            # print(f"DEBUG - calc_bisim_loss flattened z_bisim dimensions: {z_bisim_flat.shape}")
-            # print(f"DEBUG - calc_bisim_loss flattened action_emb dimensions: {action_emb_flat.shape}")
-
-            reward = self.bisim_model.predict_reward(z_bisim_flat, action_emb_flat)
-            reward = reward.reshape(b, t, 1)
-
-        reward2 = reward.clone()[perm]
-
-        next_z_bisim2 = next_z_bisim.clone()[perm]
-
-        # Calculate bisimulation loss
-        bisim_loss = self.bisim_model.calc_bisim_loss(
-            z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount
-        )
-
-        return bisim_loss
-    
     
     # mod 1 function on BSMPC
     def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, reward=None, discount=0.99):
