@@ -262,6 +262,8 @@ class VWorldModel(nn.Module):
 
         return next_z_bisim
 
+    
+    # mod 1 function on BSMPC
     def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, reward=None, discount=0.99):
         """
         Calculate bisimulation loss

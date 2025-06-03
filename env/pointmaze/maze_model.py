@@ -30,7 +30,7 @@ def parse_maze(maze_str):
     return maze_arr
 
 
-def point_maze(maze_str):
+def point_maze(maze_str, background_builtin="checker", background_rgb1="0.2 0.3 0.4", background_rgb2="0.1 0.2 0.3"):
     maze_arr = parse_maze(maze_str)
 
     mjcmodel = MJCModel('point_maze')
@@ -42,9 +42,16 @@ def point_maze(maze_str):
 
     asset = mjcmodel.root.asset()
     # buildin texture: flat, checker, gradient (default: None)
-    asset.texture(type="2d", name="groundplane", builtin="checker", rgb1="0.2 0.3 0.4", rgb2="0.1 0.2 0.3", width=100,
-                  height=100)
+
+    # default
+    asset.texture(type="2d", name="groundplane", builtin=background_builtin, rgb1=background_rgb1, rgb2=background_rgb2, width=100,height=100)
+
+    # slightly modified
+    # asset.texture(type="2d", name="groundplane", builtin="checker",rgb1="0.4 0.5 0.6",rgb2="0.3 0.4 0.5", width=100,height=100)
+
+    # gradient
     # asset.texture(type="2d",name="groundplane",builtin="gradient",rgb1="0.2 0.3 0.4",rgb2="0.1 0.2 0.3",width=100,height=100)
+
     asset.texture(name="skybox",type="skybox",builtin="gradient",rgb1=".4 .6 .8",rgb2="0 0 0",
                width="800",height="800",mark="random",markrgb="1 1 1")
     asset.material(name="groundplane",texture="groundplane",texrepeat="20 20")
@@ -174,6 +181,11 @@ class MazeEnv(mujoco_env.MujocoEnv, utils.EzPickle, offline_env.OfflineEnv):
                  reset_target=True,
                  return_value='state', # 'obs' or 'state'
                  with_target= False,
+                 #MOD1
+                 background_builtin="checker",
+                 background_rgb1="0.2 0.3 0.4", 
+                 background_rgb2="0.1 0.2 0.3",
+                 #
                  **kwargs):
         offline_env.OfflineEnv.__init__(self, **kwargs)
         self.with_target = with_target
@@ -187,7 +199,13 @@ class MazeEnv(mujoco_env.MujocoEnv, utils.EzPickle, offline_env.OfflineEnv):
         self._target = np.array([0.0,0.0])
         self.return_value = return_value
                 
-        model = point_maze(maze_spec)
+        model = point_maze(maze_spec, 
+            #MOD1
+            background_builtin=background_builtin, 
+            background_rgb1=background_rgb1, 
+            background_rgb2=background_rgb2
+            #
+            )
         with model.asfile() as f:
             mujoco_env.MujocoEnv.__init__(self, model_path=f.name, frame_skip=5)
         utils.EzPickle.__init__(self)

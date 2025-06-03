@@ -15,8 +15,18 @@ STATE_RANGES = np.array([
 
 class PointMazeWrapper(MazeEnv):
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        # MOD 1 Background change
+        if hasattr(kwargs, 'background_builtin'):
+            super().__init__(**kwargs, 
+                background_builtin=kwargs.get('background_builtin'),
+                background_rgb1=kwargs.get('background_rgb1'),
+                background_rgb2=kwargs.get('background_rgb2')
+                )
+        else:
+            super().__init__(**kwargs)
         self.action_dim = self.action_space.shape[0]
+        print("."*50)
+        print(kwargs)
     
     def sample_random_init_goal_states(self, seed):
         """

@@ -1,11 +1,7 @@
 import subprocess
-import itertools
-import time
 import json
 import os
-
-# Define parameters
-MODEL_NAME = "mod1_bisim_1024_coef_1"
+import argparse
 
 def extract_planning_result_dir_alternative(output_string):
     """
@@ -95,21 +91,85 @@ def parse_logs_from_directory(directory_path):
     logs_path = os.path.join(directory_path, "logs.json")
     return parse_logs_json(logs_path)
 
+def parse_arguments():
+    """
+    Parse command line arguments.
+    
+    Returns:
+        argparse.Namespace: Parsed arguments
+    """
+    parser = argparse.ArgumentParser(
+        description="Run planning experiments with different bisim weights and model epochs"
+    )
+    
+    parser.add_argument(
+        "--model-name", 
+        type=str, 
+        default="mod1_bisim_1024_coef_1",
+        help="Name of the model to use (default: mod1_bisim_1024_coef_1)"
+    )
+    
+    parser.add_argument(
+        "--n-evals",
+        type=int,
+        default=5,
+        help="Number of evaluations (default: 5)"
+    )
+    
+    parser.add_argument(
+        "--planner",
+        type=str,
+        default="cem",
+        help="Planner type (default: cem)"
+    )
+    
+    parser.add_argument(
+        "--goal-h",
+        type=int,
+        default=5,
+        help="Goal horizon (default: 5)"
+    )
+    
+    parser.add_argument(
+        "--goal-source",
+        type=str,
+        default="random_state",
+        help="Goal source (default: random_state)"
+    )
+    
+    parser.add_argument(
+        "--opt-steps",
+        type=int,
+        default=30,
+        help="Optimization steps for planner (default: 30)"
+    )
+    
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=6000,
+        help="Timeout for subprocess in seconds (default: 6000)"
+    )
+    
+    return parser.parse_args()
+
 
 if __name__=="__main__":
 
+    args = parse_arguments()
+    
     # Define parameter ranges
     bisim_weights = [0, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1, 0.5]
     model_epochs = list(range(5, 55, 5))  # 5, 10, ..., 50
 
     base_args = [
         "python", "plan.py",
-        "model_name="+MODEL_NAME,  # Replace with actual model name
-        "n_evals=5",
-        "planner=cem",
-        "goal_H=5",
-        "goal_source='random_state'",
-        "planner.opt_steps=30"
+        f"model_name={args.model_name}",
+        f"n_evals={args.n_evals}",
+        f"planner={args.planner}",
+        f"goal_H={args.goal_h}",
+        f"goal_source='{args.goal_source}'",
+        f"planner.opt_steps={args.opt_steps}"
     ]
 
     result_logs_list = []
@@ -124,7 +184,7 @@ if __name__=="__main__":
             ]
 
             # run planning
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=6000)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
 
             # select the result directory from result
             result_dir = extract_planning_result_dir_alternative(result.stdout)
@@ -139,5 +199,6 @@ if __name__=="__main__":
             print(result_logs)
 
 
-    for result_log in result_logs_list:
-        print(result_log)
+    with open('results.txt', 'w') as file:
+        for result_log in result_logs_list:
+            file.write(str(result_log) + '\n')
