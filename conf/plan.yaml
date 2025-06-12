@@ -41,7 +41,8 @@ objective:
   base: 2 # coeff base for weighting all frames. Only applies when mode == 'all'
   mode: last
   use_bisim: true # whether to use bisimulation metrics for planning
-  bisim_weight: 1.0 # weight of bisimulation loss
+  bisim_weight: 1.0 # weight of bisimulation loss (only used when planning_space=original)
+  planning_space: bisim # 'original' for DINOv2 + weighted bisim loss, 'bisim' for planning directly in bisim space
 
 point_maze_env:
   _target_: env.pointmaze.maze_model.point_maze
