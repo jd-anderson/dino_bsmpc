@@ -31,6 +31,7 @@ class VWorldModel(nn.Module):
             train_decoder=True,
             train_w_std_loss=True,
             train_w_reward_loss=True,
+            accelerate=False,
     ):
         super().__init__()
         self.num_hist = num_hist
@@ -45,7 +46,8 @@ class VWorldModel(nn.Module):
         self.has_bisim = bisim_model is not None
         if self.has_bisim:
             self.bisim_model = bisim_model
-            self.bisim_latent_dim = bisim_model.latent_dim
+            self.bisim_latent_dim = bisim_latent_dim
+            self.bisim_hidden_dim= bisim_hidden_dim
             self.train_bisim = train_bisim
             self.bisim_coef = bisim_coef
         else:
@@ -65,6 +67,8 @@ class VWorldModel(nn.Module):
         self.train_w_std_loss = train_w_std_loss
         self.train_w_reward_loss = train_w_reward_loss
 
+        self.accelerate = accelerate
+
         print(f"num_action_repeat: {self.num_action_repeat}")
         print(f"num_proprio_repeat: {self.num_proprio_repeat}")
         print(f"proprio encoder: {proprio_encoder}")
@@ -74,6 +78,7 @@ class VWorldModel(nn.Module):
         print(f"emb_dim: {self.emb_dim}")
         if self.has_bisim:
             print(f"bisim_model: {self.bisim_model}")
+            print(f"bisim_hidden_dim: {self.bisim_hidden_dim}")
             print(f"bisim_latent_dim: {self.bisim_latent_dim}")
             print(f"train_bisim: {self.train_bisim}")
             print(f"bisim_coef: {self.bisim_coef}")
@@ -241,7 +246,10 @@ class VWorldModel(nn.Module):
         # print(f"BISIM ENCODER: Called encode_bisim with visual shape {z_dino['visual'].shape}")
 
         # Use only visual embeddings for bisimulation
-        z_bisim = self.bisim_model.encode(z_dino["visual"])
+        if self.accelerate:
+            z_bisim = self.bisim_model.module.encode(z_dino["visual"])
+        else:
+            z_bisim = self.bisim_model.encode(z_dino["visual"])
 
         # Log output dimensions
         # print(f"BISIM ENCODER: Output bisimulation embeddings shape: {z_bisim.shape}")
@@ -263,7 +271,10 @@ class VWorldModel(nn.Module):
         z_bisim_flat = z_bisim.reshape(b * t, d)
         action_emb_flat = action_emb.reshape(b * t, -1)
 
-        next_z_bisim = self.bisim_model.next(z_bisim_flat, action_emb_flat)
+        if self.accelerate:
+            next_z_bisim = self.bisim_model.module.next(z_bisim_flat, action_emb_flat)
+        else:
+            next_z_bisim = self.bisim_model.next(z_bisim_flat, action_emb_flat)
         next_z_bisim = next_z_bisim.reshape(b, t, d)
         # print(f"BISIM PREDICTION: Output next bisim state shape: {next_z_bisim.shape}, dim={d}")
 
@@ -301,8 +312,11 @@ class VWorldModel(nn.Module):
             # Debug prints for flattened dimensions
             # print(f"DEBUG - calc_bisim_loss flattened z_bisim dimensions: {z_bisim_flat.shape}")
             # print(f"DEBUG - calc_bisim_loss flattened action_emb dimensions: {action_emb_flat.shape}")
-
-            reward = self.bisim_model.predict_reward(z_bisim_flat, action_emb_flat)
+            
+            if self.accelerate:
+                reward = self.bisim_model.module.predict_reward(z_bisim_flat, action_emb_flat)
+            else:
+                reward = self.bisim_model.predict_reward(z_bisim_flat, action_emb_flat)
             reward = reward.reshape(b, t, 1)
 
         reward2 = reward.clone()[perm]
@@ -310,9 +324,14 @@ class VWorldModel(nn.Module):
         next_z_bisim2 = next_z_bisim.clone()[perm]
 
         # Calculate bisimulation loss
-        bisim_loss = self.bisim_model.calc_bisim_loss(
-            z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
-        )
+        if self.accelerate:
+            bisim_loss = self.bisim_model.module.calc_bisim_loss(
+                z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+            )
+        else:
+            bisim_loss = self.bisim_model.calc_bisim_loss(
+                z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+            )
 
         return bisim_loss
 

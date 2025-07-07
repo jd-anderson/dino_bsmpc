@@ -32,7 +32,7 @@ hydra:
 training:
   seed: 0
   epochs: 50
-  batch_size: 5 # should >= nodes * tasks_per_node
+  batch_size: 10 # should >= nodes * tasks_per_node
   save_every_x_epoch: 1
   reconstruct_every_x_batch: 500
   num_reconstruct_samples: 6
@@ -67,6 +67,8 @@ num_pred: 1 # only supports 1
 has_predictor: True # set this to False for only training a decoder
 has_decoder: True # set this to False for only training a predictor
 
+accelerate_launch: False
+
 model:
   _target_: models.visual_world_model.VWorldModel
   image_size: ${img_size}
@@ -79,7 +81,7 @@ model:
 
   train_w_std_loss: True
   train_w_reward_loss: True
-  
+
 debug: False 
 
 # Planning params for planning eval jobs launched during training
