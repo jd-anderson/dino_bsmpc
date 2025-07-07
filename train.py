@@ -151,11 +151,15 @@ class Trainer:
         self.train_predictor = self.cfg.model.train_predictor
         self.train_decoder = self.cfg.model.train_decoder
         self.train_bisim = self.cfg.model.get('train_bisim', True)  # Control training of bisimulation model
-        log.info(f"Train encoder, predictor, decoder, bisim:\
+        self.train_w_std_loss = self.cfg.model.get('train_w_std_loss', True)
+        self.train_w_reward_loss = self.cfg.model.get('train_w_reward_loss', True)
+        log.info(f"Train encoder, predictor, decoder, bisim, train_w_std_loss, train_w_reward_loss:\
             {self.cfg.model.train_encoder},\
             {self.cfg.model.train_predictor},\
             {self.cfg.model.train_decoder},\
-            {self.train_bisim}")
+            {self.train_bisim},\
+            {self.train_w_std_loss},\
+            {self.train_w_reward_loss}")
 
         self._keys_to_save = [
             "epoch",
@@ -347,6 +351,8 @@ class Trainer:
             num_proprio_repeat=self.cfg.num_proprio_repeat,
             bisim_coef=self.cfg.get('bisim_coef', 1.0),
             train_bisim=self.train_bisim,
+            train_w_std_loss=self.train_w_std_loss,
+            train_w_reward_loss=self.train_w_reward_loss,
         )
 
     def init_optimizers(self):

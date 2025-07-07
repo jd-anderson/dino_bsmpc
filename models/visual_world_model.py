@@ -29,6 +29,8 @@ class VWorldModel(nn.Module):
             train_encoder=True,
             train_predictor=False,
             train_decoder=True,
+            train_w_std_loss=True,
+            train_w_reward_loss=True,
     ):
         super().__init__()
         self.num_hist = num_hist
@@ -60,6 +62,9 @@ class VWorldModel(nn.Module):
         self.action_dim = action_dim * num_action_repeat
         self.emb_dim = self.encoder.emb_dim + (self.action_dim + self.proprio_dim) * (concat_dim)  # Not used
 
+        self.train_w_std_loss = train_w_std_loss
+        self.train_w_reward_loss = train_w_reward_loss
+
         print(f"num_action_repeat: {self.num_action_repeat}")
         print(f"num_proprio_repeat: {self.num_proprio_repeat}")
         print(f"proprio encoder: {proprio_encoder}")
@@ -72,6 +77,8 @@ class VWorldModel(nn.Module):
             print(f"bisim_latent_dim: {self.bisim_latent_dim}")
             print(f"train_bisim: {self.train_bisim}")
             print(f"bisim_coef: {self.bisim_coef}")
+        print(f"train_w_std_loss: {self.train_w_std_loss}")
+        print(f"train_w_reward_loss: {self.train_w_reward_loss}")
 
         self.concat_dim = concat_dim  # 0 or 1
         assert concat_dim == 0 or concat_dim == 1, f"concat_dim {concat_dim} not supported."
@@ -304,7 +311,7 @@ class VWorldModel(nn.Module):
 
         # Calculate bisimulation loss
         bisim_loss = self.bisim_model.calc_bisim_loss(
-            z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount
+            z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
         )
 
         return bisim_loss
@@ -383,7 +390,11 @@ class VWorldModel(nn.Module):
                     z_tgt[:, :, :, :-self.action_dim].detach()
                 )
 
-            loss = loss + z_loss
+            if self.train_w_std_loss:
+                loss = loss + z_loss
+            else:
+                loss = loss + 0*z_loss
+            
             loss_components["z_loss"] = z_loss
             loss_components["z_visual_loss"] = z_visual_loss
             loss_components["z_proprio_loss"] = z_proprio_loss

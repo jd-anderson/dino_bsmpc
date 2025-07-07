@@ -32,7 +32,7 @@ hydra:
 training:
   seed: 0
   epochs: 50
-  batch_size: 10 # should >= nodes * tasks_per_node
+  batch_size: 5 # should >= nodes * tasks_per_node
   save_every_x_epoch: 1
   reconstruct_every_x_batch: 500
   num_reconstruct_samples: 6
@@ -77,6 +77,9 @@ model:
   train_decoder: True
   train_bisim: True  # Control whether to train the bisimulation model
 
+  train_w_std_loss: True
+  train_w_reward_loss: True
+  
 debug: False 
 
 # Planning params for planning eval jobs launched during training
