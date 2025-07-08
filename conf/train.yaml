@@ -67,6 +67,8 @@ num_pred: 1 # only supports 1
 has_predictor: True # set this to False for only training a decoder
 has_decoder: True # set this to False for only training a predictor
 
+accelerate_launch: False
+
 model:
   _target_: models.visual_world_model.VWorldModel
   image_size: ${img_size}
@@ -76,6 +78,9 @@ model:
   train_predictor: True
   train_decoder: True
   train_bisim: True  # Control whether to train the bisimulation model
+
+  train_w_std_loss: True
+  train_w_reward_loss: True
 
 debug: False 
 

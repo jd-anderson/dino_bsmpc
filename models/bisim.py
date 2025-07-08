@@ -86,7 +86,7 @@ class BisimModel(nn.Module):
         # print(f"DEBUG - BisimModel.predict_reward concatenated input: {x.shape}")
         return self.reward(x)
     
-    def calc_bisim_loss(self, z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount=0.99):
+    def calc_bisim_loss(self, z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount=0.99, train_w_reward_loss=True):
         """
         Calculate bisimulation loss
         bisimulation metric: d(s1,s2) = |r(s1) - r(s2)| + γ · d(P(s1), P(s2))
@@ -104,7 +104,11 @@ class BisimModel(nn.Module):
         transition_dist = torch.norm(next_z_bisim - next_z_bisim2, dim=-1)
         
         # Target bisimilarity
-        target_bisimilarity = r_dist + discount * transition_dist
+        # if want reward_loss
+        if train_w_reward_loss:
+            target_bisimilarity = r_dist + discount * transition_dist
+        else:
+            target_bisimilarity = 0*r_dist + discount * transition_dist
         
         # Bisimulation loss
         bisim_loss = (z_dist - target_bisimilarity).pow(2)
