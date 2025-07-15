@@ -2,6 +2,7 @@ import os
 import sys
 import warnings
 from pathlib import Path
+import random
 
 import hydra
 import matplotlib.pyplot as plt
@@ -14,13 +15,28 @@ warnings.filterwarnings("ignore")
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+def set_global_seed(seed=42):
+    """Set all random seeds for reproducible results"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 from env.pointmaze.maze_model import MazeEnv
 from plan import ALL_MODEL_KEYS
 
-# dictionary mapping model names to visualization titles
+ALL_MODEL_KEYS = ALL_MODEL_KEYS + ["bisim_model"]
+
+# dictionary mapping model names to visualization titles and optional epoch specification
+# Format: "model_name": ("title", epoch_number) or "model_name": "title" (uses latest)
 MODEL_TITLES = {
-    # "bisim_100_mb_500_50_0_7": "Bisim 100; standard loss; memory buffer",
-    "mod1_bisim_100_coef_1": "Bisim 100; standard loss; no memory buffer"
+    "bisim_100_mb_500_50_0_7": ("Bisim 100; memory buffer; epoch 25", 25),
+    "mod1_bisim_100_coef_1": ("Bisim 100; no memory buffer; epoch 50", 50),
+    "mod1_bisim_512_coef_1": "Bisim 512; no memory buffer",
+    "mod1_bisim_1024_coef_1": "Bisim 1024; no memory buffer",
+    "mod1_bisim_5000_coef_1/21-59-56": "Bisim 5000; no memory buffer",
 }
 
 # background config
@@ -56,11 +72,12 @@ def load_ckpt(snapshot_path, device):
     result["epoch"] = payload["epoch"]
     return result
 
-def load_model(model_ckpt, train_cfg, num_action_repeat, device):
+def load_model_with_bisim_params(model_ckpt, train_cfg, num_action_repeat, device):
+    """Load model with properly configured bisimulation parameters"""
     result = {}
     if model_ckpt.exists():
         result = load_ckpt(model_ckpt, device)
-        print(f"Resuming from epoch {result['epoch']}: {model_ckpt}")
+        print(f"Loaded checkpoint from epoch {result['epoch']}: {model_ckpt}")
 
     if "encoder" not in result:
         result["encoder"] = hydra.utils.instantiate(train_cfg.encoder)
@@ -82,31 +99,19 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
         result["decoder"] = None
 
     # check if we need the bisimulation model
-    if train_cfg.get('has_bisim', False) and "bisim_model" not in result:
-        from models.bisim import BisimModel
-
-        if result["encoder"].latent_ndim == 1:
-            input_dim = result["encoder"].emb_dim
-        else:
-            decoder_scale = 16
-            num_side_patches = train_cfg.img_size // decoder_scale
-            num_patches = num_side_patches ** 2
-            input_dim = num_patches * result["encoder"].emb_dim
-
+    if train_cfg.get('has_bisim', False):
         bisim_latent_dim = train_cfg.get('bisim_latent_dim', 64)
         bisim_hidden_dim = train_cfg.get('bisim_hidden_dim', 256)
         
-        print(f"Creating bisimulation model with latent_dim={bisim_latent_dim}, hidden_dim={bisim_hidden_dim}")
-
-        result["bisim_model"] = BisimModel(
-            input_dim=input_dim,
-            latent_dim=bisim_latent_dim,
-            hidden_dim=bisim_hidden_dim,
-            action_dim=train_cfg.action_emb_dim,
-        )
-        print(f"Created new bisimulation model with latent dim {bisim_latent_dim}")
-    elif not train_cfg.get('has_bisim', False):
+        if "bisim_model" in result:
+            print(f"Loaded bisimulation model from checkpoint")
+        else:
+            print("Failed to load bisimulation model: checkpoints not found")
+            raise
+    else:
         result["bisim_model"] = None
+        bisim_latent_dim = 64
+        bisim_hidden_dim = 256
 
     model = hydra.utils.instantiate(
         train_cfg.model,
@@ -125,42 +130,84 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
         bisim_latent_dim=bisim_latent_dim,
         bisim_hidden_dim=bisim_hidden_dim,
         train_bisim=train_cfg.model.get('train_bisim', True),
+        bisim_memory_buffer_size=train_cfg.get('bisim_memory_buffer_size', 0),
+        bisim_comparison_size=train_cfg.get('bisim_comparison_size', 20),
     )
     model.to(device)
+    
     return model
 
-def load_model_from_path(model_path, device):
-    """Load a model from the given path"""
+def load_model_from_path(model_path, device, epoch=None):
+    """Load a model from the given path, optionally specifying epoch"""
     # load model config
-    with open(os.path.join(model_path, "hydra.yaml"), "r") as f:
-        model_cfg = OmegaConf.load(f)
+    try:
+        with open(os.path.join(model_path, "hydra.yaml"), "r") as f:
+            model_cfg = OmegaConf.load(f)
+    except Exception as e:
+        print(f"ERROR: Failed to load hydra.yaml: {e}")
+        print(f"Skipping model due to config file error")
+        raise e
     
     # load checkpoint
-    model_ckpt = Path(model_path) / "checkpoints" / "model_latest.pth"
-    if not model_ckpt.exists():
-        # try to find the highest numbered model
-        ckpt_files = list((Path(model_path) / "checkpoints").glob("model_*.pth"))
-        if not ckpt_files:
-            raise FileNotFoundError(f"No model checkpoints found in {model_path}")
-        
-        # find the highest numbered checkpoint
-        numbered_ckpts = [f for f in ckpt_files if f.stem.startswith("model_") and f.stem[6:].isdigit()]
-        if numbered_ckpts:
-            model_ckpt = max(numbered_ckpts, key=lambda x: int(x.stem[6:]))
-        else:
-            model_ckpt = ckpt_files[0]
+    if epoch is not None:
+        model_ckpt = Path(model_path) / "checkpoints" / f"model_{epoch}.pth"
+        if not model_ckpt.exists():
+            print(f"Warning: Epoch {epoch} checkpoint not found, trying alternative names...")
+            alternatives = [
+                f"model_epoch_{epoch}.pth",
+                f"checkpoint_{epoch}.pth", 
+                f"epoch_{epoch}.pth"
+            ]
+            for alt_name in alternatives:
+                alt_path = Path(model_path) / "checkpoints" / alt_name
+                if alt_path.exists():
+                    model_ckpt = alt_path
+                    break
+            else:
+                ckpt_dir = Path(model_path) / "checkpoints"
+                available_ckpts = list(ckpt_dir.glob("*.pth"))
+                print(f"Available checkpoints in {ckpt_dir}:")
+                for ckpt in sorted(available_ckpts):
+                    print(f"  - {ckpt.name}")
+                raise FileNotFoundError(f"Epoch {epoch} checkpoint not found in {model_path}")
+    else:
+        model_ckpt = Path(model_path) / "checkpoints" / "model_latest.pth"
+        if not model_ckpt.exists():
+            ckpt_files = list((Path(model_path) / "checkpoints").glob("model_*.pth"))
+            if not ckpt_files:
+                raise FileNotFoundError(f"No model checkpoints found in {model_path}")
+            
+            numbered_ckpts = [f for f in ckpt_files if f.stem.startswith("model_") and f.stem[6:].isdigit()]
+            if numbered_ckpts:
+                model_ckpt = max(numbered_ckpts, key=lambda x: int(x.stem[6:]))
+            else:
+                model_ckpt = ckpt_files[0]
     
     print(f"Loading model from: {model_ckpt}")
     
-    # load the model using our custom function
     num_action_repeat = model_cfg.num_action_repeat
-    model = load_model(model_ckpt, model_cfg, num_action_repeat, device=device)
+    model = load_model_with_bisim_params(model_ckpt, model_cfg, num_action_repeat, device=device)
+    
+    if epoch is not None:
+        model_cfg.loaded_epoch = epoch
+    else:
+        try:
+            if "model_latest" in str(model_ckpt):
+                model_cfg.loaded_epoch = "latest"
+            elif "model_" in str(model_ckpt):
+                epoch_str = str(model_ckpt).split("model_")[1].split(".pth")[0]
+                if epoch_str.isdigit():
+                    model_cfg.loaded_epoch = int(epoch_str)
+                else:
+                    model_cfg.loaded_epoch = "unknown"
+            else:
+                model_cfg.loaded_epoch = "unknown"
+        except:
+            model_cfg.loaded_epoch = "unknown"
     
     return model, model_cfg
 
 class FixedMazeEnv(MazeEnv):
-    """MazeEnv with fixed dtype issues"""
-    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         try:
@@ -194,17 +241,15 @@ class FixedMazeEnv(MazeEnv):
     
     def set_target(self, target_location=None):
         if target_location is None:
-            idx = self.np_random.choice(len(self.empty_and_goal_locations))
-            reset_location = np.array(self.empty_and_goal_locations[idx]).astype(np.float32)
-            target_location = reset_location + self.np_random.uniform(low=-.1, high=.1, size=self.model.nq)
+            reset_location = np.array(self.empty_and_goal_locations[0]).astype(np.float32)
+            target_location = reset_location
         target_location = np.array(target_location, dtype=np.float32)
         self._target = target_location
 
     def reset_model(self):
-        idx = self.np_random.choice(len(self.empty_and_goal_locations))
-        reset_location = np.array(self.empty_and_goal_locations[idx]).astype(np.float32)
-        qpos = reset_location + self.np_random.uniform(low=-.1, high=.1, size=self.model.nq)
-        qvel = self.init_qvel + self.np_random.randn(self.model.nv) * .1
+        reset_location = np.array(self.empty_and_goal_locations[0]).astype(np.float32)
+        qpos = reset_location
+        qvel = self.init_qvel
         self.set_state(qpos, qvel)
         if self.reset_target:
             self.set_target()
@@ -213,9 +258,15 @@ class FixedMazeEnv(MazeEnv):
     def reset_to_location(self, location):
         self.sim.reset()
         reset_location = np.array(location).astype(np.float32)
-        qpos = reset_location + self.np_random.uniform(low=-.1, high=.1, size=self.model.nq)
-        qvel = self.init_qvel + self.np_random.randn(self.model.nv) * .1
+        qpos = reset_location
+        qvel = self.init_qvel
         self.set_state(qpos, qvel)
+        return self._get_obs()
+    
+    def reset_deterministic(self, qpos, qvel):
+        """Reset to exact state without any randomness"""
+        self.sim.reset()
+        self.set_state(np.array(qpos, dtype=np.float32), np.array(qvel, dtype=np.float32))
         return self._get_obs()
 
     def set_marker(self):
@@ -236,15 +287,19 @@ def generate_observations(state, backgrounds):
     """Generate observations for the same state with different backgrounds"""
     observations = {}
     
+    print(f"    Generating observations for state: {state}")
+    
     for bg_name, bg_config in backgrounds.items():
         try:
+            print(f"      Processing background: {bg_name}")
+            
+            set_global_seed(42)
+            
             env = create_env_with_background(bg_config)
             env.seed(42)
             
-            # set the environment to the specific state
-            env.reset()
-            env.set_state(state[:2], state[2:4])
-            
+            env.reset_deterministic(state[:2], state[2:4])  # qpos, qvel
+
             # get observation
             obs = env._get_obs()
             visual = env._render_frame()
@@ -266,8 +321,13 @@ def encode_observations(observations, model, device):
     """Encode observations using the model"""
     encodings = {}
     
+    print(f"    Encoding {len(observations)} observations")
+    
     for bg_name, obs in observations.items():
         try:
+            print(f"      Encoding background: {bg_name}")
+            set_global_seed(42)
+
             # prepare observation for model
             visual = torch.tensor(obs['visual']).float().permute(2, 0, 1).unsqueeze(0).unsqueeze(0).to(device) / 255.0
             proprio = torch.tensor(obs['proprio']).float().unsqueeze(0).unsqueeze(0).to(device)
@@ -413,16 +473,12 @@ def create_visualization(all_encodings, model_names, model_titles):
                           s=100, label=bg_config['title'], alpha=0.7)
             
             ax.set_title('DinoV2 Space')
-            ax.set_xlabel('PC1')
-            ax.set_ylabel('PC2')
             ax.grid(True, alpha=0.3)
             
-            # add legend below plot
             ax.legend(bbox_to_anchor=(0.5, -0.25), loc='upper center', fontsize=8, ncol=3, framealpha=0.9)
             
-            # add distance text below legend
             if distances:
-                dist_text = '\n'.join([f"{k}: {v:.3f}" for k, v in distances.items()])
+                dist_text = '\n'.join([f"({i + 1}) {k}: {v:.6f}" for i, (k, v) in enumerate(distances.items())])
                 ax.text(0.5, -0.45, dist_text, transform=ax.transAxes,
                         horizontalalignment='center', verticalalignment='top', fontsize=8,
                         bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
@@ -451,15 +507,13 @@ def create_visualization(all_encodings, model_names, model_titles):
                               s=100, label=bg_config['title'], alpha=0.7)
                 
                 title = model_titles.get(model_name, model_name)
-                ax.set_title(f'{title}\nBisim Space')
-                ax.set_xlabel('PC1')
-                ax.set_ylabel('PC2')
+                ax.set_title(f'{title}\n')
                 ax.grid(True, alpha=0.3)
                 
                 ax.legend(bbox_to_anchor=(0.5, -0.25), loc='upper center', fontsize=8, ncol=3, framealpha=0.9)
                 
                 if distances:
-                    dist_text = '\n'.join([f"{k}: {v:.3f}" for k, v in distances.items()])
+                    dist_text = '\n'.join([f"({i + 1}) {k}: {v:.6f}" for i, (k, v) in enumerate(distances.items())])
                     ax.text(0.5, -0.45, dist_text, transform=ax.transAxes, 
                            horizontalalignment='center', verticalalignment='top', fontsize=8,
                            bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
@@ -472,7 +526,28 @@ def create_visualization(all_encodings, model_names, model_titles):
     plt.subplots_adjust(right=0.8)
     return fig
 
+def list_available_checkpoints(model_path):
+    """List all available checkpoints for a model"""
+    ckpt_dir = Path(model_path) / "checkpoints"
+    if not ckpt_dir.exists():
+        return []
+    
+    checkpoints = []
+    for ckpt_file in ckpt_dir.glob("*.pth"):
+        name = ckpt_file.stem
+        epoch = None
+        if name.startswith("model_") and name[6:].isdigit():
+            epoch = int(name[6:])
+        elif name == "model_latest":
+            epoch = "latest"
+        checkpoints.append((ckpt_file.name, epoch))
+    
+    return sorted(checkpoints, key=lambda x: x[1] if isinstance(x[1], int) else float('inf'))
+
 def main():
+    set_global_seed(42)
+    print("Random seeds set to 42")
+    
     outputs_dir = "./outputs"
     if not os.path.exists(outputs_dir):
         print(f"Error: {outputs_dir} not found. Please run this script from the directory containing the outputs folder.")
@@ -482,8 +557,17 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
+    # parse MODEL_TITLES to handle both string and tuple formats
+    model_configs = {}
+    for model_name, config in MODEL_TITLES.items():
+        if isinstance(config, tuple):
+            title, epoch = config
+            model_configs[model_name] = {'title': title, 'epoch': epoch}
+        else:
+            model_configs[model_name] = {'title': config, 'epoch': None}
+    
     available_models = []
-    for model_name in MODEL_TITLES.keys():
+    for model_name in model_configs.keys():
         model_path = os.path.join(outputs_dir, model_name)
         if os.path.exists(model_path):
             available_models.append(model_name)
@@ -494,14 +578,22 @@ def main():
         print("No specified models found in outputs folder.")
         print("Please check that the models listed in MODEL_TITLES exist in:", outputs_dir)
         print("Currently specified models:")
-        for model_name in MODEL_TITLES.keys():
+        for model_name in model_configs.keys():
             print(f"  - {model_name}")
         return
     
     print(f"Found {len(available_models)} specified models:")
     for model_name in available_models:
-        title = MODEL_TITLES.get(model_name, model_name)
-        print(f"  - {model_name}: {title}")
+        config = model_configs[model_name]
+        epoch_info = f" (epoch {config['epoch']})" if config['epoch'] is not None else " (latest)"
+        print(f"  - {model_name}: {config['title']}{epoch_info}")
+        
+        model_path = os.path.join(outputs_dir, model_name)
+        checkpoints = list_available_checkpoints(model_path)
+        if checkpoints:
+            print(f"    Available checkpoints: {[f'epoch {epoch}' if isinstance(epoch, int) else epoch for _, epoch in checkpoints]}")
+        else:
+            print(f"    No checkpoints found in {model_path}/checkpoints/")
     
     test_states = [
          np.array([2.5, 1.2, 0.0, 0.0]),
@@ -512,11 +604,14 @@ def main():
     all_observations = {}  # store observations for visualization
     
     for model_name in available_models:
-        print(f"\nProcessing model: {model_name}")
+        config = model_configs[model_name]
+        epoch_info = f" (epoch {config['epoch']})" if config['epoch'] is not None else " (latest)"
+        print(f"\nProcessing model: {model_name}{epoch_info}")
         model_path = os.path.join(outputs_dir, model_name)
         
         try:
-            model, model_cfg = load_model_from_path(model_path, device)
+            model, model_cfg = load_model_from_path(model_path, device, epoch=config['epoch'])
+            print(f"  Successfully loaded model from epoch {model_cfg.loaded_epoch}")
             
             # generate encodings for each test state
             model_encodings = {}
@@ -557,7 +652,8 @@ def main():
     
     # create visualization
     print("\nCreating encoding visualization")
-    fig = create_visualization(all_encodings, available_models, MODEL_TITLES)
+    model_titles = {name: config['title'] for name, config in model_configs.items()}
+    fig = create_visualization(all_encodings, available_models, model_titles)
     
     # save and show
     filename = "distance_visualization.png"
@@ -569,6 +665,25 @@ def main():
     print(f"Generated files:")
     print(f"  - {obs_filename}: Test observations with different backgrounds")
     print(f"  - {filename}: PCA visualization of encodings in DinoV2 and bisimulation spaces")
+    
+    print("\n=== DISTANCE SUMMARY ===")
+    for model_name in available_models:
+        config = model_configs[model_name]
+        print(f"\n{config['title']}:")
+        model_encodings = all_encodings.get(model_name, {})
+        
+        state_encodings = {}
+        for bg_name in BACKGROUNDS.keys():
+            key = f"state_0_{bg_name}"
+            if key in model_encodings:
+                state_encodings[bg_name] = model_encodings[key]
+        
+        for space_name in ['dinov2', 'bisim']:
+            embeddings_2d, labels, distances = compute_pca_and_distances(state_encodings, space_name)
+            if distances:
+                print(f"  {space_name.upper()} distances:")
+                for pair, dist in distances.items():
+                    print(f"    {pair}: {dist:.6f}")
 
 if __name__ == "__main__":
     main() 
