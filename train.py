@@ -356,7 +356,9 @@ class Trainer:
             train_bisim=self.train_bisim,
             train_w_std_loss=self.train_w_std_loss,
             train_w_reward_loss=self.train_w_reward_loss,
-            accelerate=self.accelerate
+            accelerate=self.accelerate,
+            bisim_memory_buffer_size=self.cfg.get('bisim_memory_buffer_size', 0),
+            bisim_comparison_size=self.cfg.get('bisim_comparison_size', 20),
         )
 
     def init_optimizers(self):
