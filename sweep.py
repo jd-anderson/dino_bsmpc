@@ -159,8 +159,9 @@ if __name__=="__main__":
     args = parse_arguments()
     
     # Define parameter ranges
-    bisim_weights = [0, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1, 0.5]
+    bisim_weights = [1]
     model_epochs = list(range(5, 55, 5))  # 5, 10, ..., 50
+    backgrounds = ['no_change', 'slight_change', 'gradient']
 
     base_args = [
         "python", "plan.py",
@@ -172,33 +173,38 @@ if __name__=="__main__":
         f"planner.opt_steps={args.opt_steps}"
     ]
 
-    result_logs_list = []
-
-    for bisim_weight in bisim_weights:
-        for model_epoch in model_epochs:
-            
-            # Create commands
-            cmd = base_args + [
-                f"objective.bisim_weight={bisim_weight}",
-                f"model_epoch={model_epoch}"
-            ]
-
-            # run planning
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
-
-            # select the result directory from result
-            result_dir = extract_planning_result_dir_alternative(result.stdout)
-
-            result_logs = {'bisim_weight': bisim_weight,
-                            'model_epoch': model_epoch}
-
-            result_logs.update(parse_logs_from_directory(result_dir))
-
-            result_logs_list.append(result_logs)
-
-            print(result_logs)
 
 
-    with open('results.txt', 'w') as file:
-        for result_log in result_logs_list:
-            file.write(str(result_log) + '\n')
+    for background in backgrounds: 
+        result_logs_list = []
+        print("=" *75)
+        print("Current sweeping: " + background)
+        for bisim_weight in bisim_weights:
+            for model_epoch in model_epochs:
+                
+                # Create commands
+                cmd = base_args + [
+                    f"objective.bisim_weight={bisim_weight}",
+                    f"model_epoch={model_epoch}",
+                    f"point_maze_env.background={background}"
+                ]
+
+                # run planning
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+
+                # select the result directory from result
+                result_dir = extract_planning_result_dir_alternative(result.stdout)
+
+                result_logs = {'bisim_weight': bisim_weight,
+                                'model_epoch': model_epoch}
+
+                result_logs.update(parse_logs_from_directory(result_dir))
+
+                result_logs_list.append(result_logs)
+
+                print(result_logs)
+
+
+        with open(f'{background}.txt', 'w') as file:
+            for result_log in result_logs_list:
+                file.write(str(result_log) + '\n')
