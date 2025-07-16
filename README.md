@@ -130,6 +130,14 @@ python train.py --config-name train.yaml env=point_maze frameskip=5 num_hist=3
 ```
 You may specify models' output directory at `ckpt_base_path` in `conf/train.yaml`.
 
+
+Distributed training uses accelerate python package, usage example: 
+
+```
+accelerate launch --num_processes=2 --num_machines=1 --mixed_precision=no --dynamo_backend=no train.py --config-name train.yaml env=point_maze frameskip=5 num_hist=3 model.train_w_std_loss=True model.train_w_reward_loss=True accelerate=True
+```
+where --num_processes=2 indicates 2 GPUs are used, note the batch size set in train.yaml should be always divisible by num_processes.
+
 # Plan with a DINO-WM
 Once a world model has been trained, you may use it for planning with an example command like this:
 
@@ -137,7 +145,7 @@ Once a world model has been trained, you may use it for planning with an example
 python plan.py model_name=<model_name> n_evals=5 planner=cem goal_H=5 goal_source='random_state' planner.opt_steps=30
 ```
 
-where the model is saved at folder `<ckpt_base_path>/outputs/<model_name>`, and `<ckpt_base_path>` can be specified in `conf/plan.yaml`.
+where the model is saved at folder `<ckpt_base_path>/outputs/<model_name>`, and `<ckpt_base_path>` can be and *must be specified in `conf/plan.yaml`.
 
 <!-- ## Acknowledgement
 TODO -->
