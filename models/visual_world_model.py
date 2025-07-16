@@ -246,7 +246,7 @@ class VWorldModel(nn.Module):
         # print(f"BISIM ENCODER: Called encode_bisim with visual shape {z_dino['visual'].shape}")
 
         # Use only visual embeddings for bisimulation
-        if self.accelerate:
+        if hasattr(self.bisim_model, "module"):
             z_bisim = self.bisim_model.module.encode(z_dino["visual"])
         else:
             z_bisim = self.bisim_model.encode(z_dino["visual"])
@@ -271,7 +271,7 @@ class VWorldModel(nn.Module):
         z_bisim_flat = z_bisim.reshape(b * t, d)
         action_emb_flat = action_emb.reshape(b * t, -1)
 
-        if self.accelerate:
+        if hasattr(self.bisim_model, "module"):
             next_z_bisim = self.bisim_model.module.next(z_bisim_flat, action_emb_flat)
         else:
             next_z_bisim = self.bisim_model.next(z_bisim_flat, action_emb_flat)
@@ -313,7 +313,7 @@ class VWorldModel(nn.Module):
             # print(f"DEBUG - calc_bisim_loss flattened z_bisim dimensions: {z_bisim_flat.shape}")
             # print(f"DEBUG - calc_bisim_loss flattened action_emb dimensions: {action_emb_flat.shape}")
             
-            if self.accelerate:
+            if hasattr(self.bisim_model, "module"):
                 reward = self.bisim_model.module.predict_reward(z_bisim_flat, action_emb_flat)
             else:
                 reward = self.bisim_model.predict_reward(z_bisim_flat, action_emb_flat)
@@ -324,7 +324,7 @@ class VWorldModel(nn.Module):
         next_z_bisim2 = next_z_bisim.clone()[perm]
 
         # Calculate bisimulation loss
-        if self.accelerate:
+        if hasattr(self.bisim_model, "module"):
             bisim_loss = self.bisim_model.module.calc_bisim_loss(
                 z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
             )
