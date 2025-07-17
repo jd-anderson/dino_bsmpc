@@ -412,26 +412,7 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
     elif not train_cfg.has_decoder:
         result["decoder"] = None
 
-    # Check if we need the bisimulation model
-    if train_cfg.get('has_bisim', False) and "bisim_model" not in result:
-        from models.bisim import BisimModel
-
-        if result["encoder"].latent_ndim == 1:  # if feature is 1D
-            input_dim = result["encoder"].emb_dim
-        else:
-            decoder_scale = 16  # from vqvae
-            num_side_patches = train_cfg.img_size // decoder_scale
-            num_patches = num_side_patches ** 2
-            input_dim = num_patches * result["encoder"].emb_dim
-
-        result["bisim_model"] = BisimModel(
-            input_dim=input_dim,
-            latent_dim=train_cfg.get('bisim_latent_dim', 64),
-            hidden_dim=train_cfg.get('bisim_hidden_dim', 256),
-            action_dim=train_cfg.action_emb_dim,
-        )
-        print(f"Created new bisimulation model with latent dim {train_cfg.get('bisim_latent_dim', 64)}")
-    elif not train_cfg.get('has_bisim', False):
+    if not train_cfg.get('has_bisim', False):
         result["bisim_model"] = None
 
     if result.get("bisim_model") is not None:

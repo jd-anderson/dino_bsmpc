@@ -31,11 +31,11 @@ from plan import ALL_MODEL_KEYS
 # dictionary mapping model names to visualization titles and optional epoch specification
 # Format: "model_name": ("title", epoch_number) or "model_name": "title" (uses latest)
 MODEL_TITLES = {
-    "bisim_100_mb_500_50_0_7": ("Bisim 100; memory buffer; epoch 25", 25),
-    "mod1_bisim_100_coef_1": ("Bisim 100; no memory buffer; epoch 50", 50),
+    # "bisim_100_mb_500_50_0_7": ("Bisim 100; memory buffer; epoch 25", 25),
+    # "mod1_bisim_100_coef_1": ("Bisim 100; no memory buffer; epoch 50", 50),
     "mod1_bisim_512_coef_1": "Bisim 512; no memory buffer",
-    "mod1_bisim_1024_coef_1": "Bisim 1024; no memory buffer",
-    "mod1_bisim_5000_coef_1/21-59-56": "Bisim 5000; no memory buffer",
+    # "mod1_bisim_1024_coef_1": "Bisim 1024; no memory buffer",
+    # "mod1_bisim_5000_coef_1/21-59-56": "Bisim 5000; no memory buffer",
 }
 
 # background config
@@ -644,4 +644,4 @@ def main():
                     print(f"    {pair}: {dist:.6f}")
 
 if __name__ == "__main__":
-    main() 
+    main()
