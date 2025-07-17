@@ -24,10 +24,9 @@ def set_global_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-from env.pointmaze.maze_model import MazeEnv
+from env.pointmaze.point_maze_wrapper import PointMazeWrapper
+from env.pointmaze.maze_model import U_MAZE
 from plan import ALL_MODEL_KEYS
-
-ALL_MODEL_KEYS = ALL_MODEL_KEYS + ["bisim_model"]
 
 # dictionary mapping model names to visualization titles and optional epoch specification
 # Format: "model_name": ("title", epoch_number) or "model_name": "title" (uses latest)
@@ -99,19 +98,36 @@ def load_model_with_bisim_params(model_ckpt, train_cfg, num_action_repeat, devic
         result["decoder"] = None
 
     # check if we need the bisimulation model
-    if train_cfg.get('has_bisim', False):
-        bisim_latent_dim = train_cfg.get('bisim_latent_dim', 64)
-        bisim_hidden_dim = train_cfg.get('bisim_hidden_dim', 256)
-        
-        if "bisim_model" in result:
-            print(f"Loaded bisimulation model from checkpoint")
+    if train_cfg.get('has_bisim', False) and "bisim_model" not in result:
+        from models.bisim import BisimModel
+
+        if result["encoder"].latent_ndim == 1:  # if feature is 1D
+            input_dim = result["encoder"].emb_dim
         else:
-            print("Failed to load bisimulation model: checkpoints not found")
-            raise
-    else:
+            decoder_scale = 16  # from vqvae
+            num_side_patches = train_cfg.img_size // decoder_scale
+            num_patches = num_side_patches ** 2
+            input_dim = num_patches * result["encoder"].emb_dim
+
+        result["bisim_model"] = BisimModel(
+            input_dim=input_dim,
+            latent_dim=train_cfg.get('bisim_latent_dim', 64),
+            hidden_dim=train_cfg.get('bisim_hidden_dim', 256),
+            action_dim=train_cfg.action_emb_dim,
+        )
+        print(f"Created new bisimulation model with latent dim {train_cfg.get('bisim_latent_dim', 64)}")
+    elif not train_cfg.get('has_bisim', False):
         result["bisim_model"] = None
-        bisim_latent_dim = 64
-        bisim_hidden_dim = 256
+
+    # Extract actual bisimulation parameters from loaded model (if available)]
+    if result.get("bisim_model") is not None:
+        actual_bisim_latent_dim = result["bisim_model"].latent_dim
+        actual_bisim_hidden_dim = result["bisim_model"].hidden_dim
+        print(f"DEBUG: Using actual bisimulation parameters from checkpoint: latent_dim={actual_bisim_latent_dim}, hidden_dim={actual_bisim_hidden_dim}")
+    else:
+        actual_bisim_latent_dim = train_cfg.get('bisim_latent_dim', 64)
+        actual_bisim_hidden_dim = train_cfg.get('bisim_hidden_dim', 256)
+        print(f"DEBUG: Using config bisimulation parameters: latent_dim={actual_bisim_latent_dim}, hidden_dim={actual_bisim_hidden_dim}")
 
     model = hydra.utils.instantiate(
         train_cfg.model,
@@ -127,11 +143,9 @@ def load_model_with_bisim_params(model_ckpt, train_cfg, num_action_repeat, devic
         num_action_repeat=num_action_repeat,
         num_proprio_repeat=train_cfg.num_proprio_repeat,
         bisim_coef=train_cfg.get('bisim_coef', 1.0),
-        bisim_latent_dim=bisim_latent_dim,
-        bisim_hidden_dim=bisim_hidden_dim,
+        bisim_latent_dim=actual_bisim_latent_dim,
+        bisim_hidden_dim=actual_bisim_hidden_dim,
         train_bisim=train_cfg.model.get('train_bisim', True),
-        bisim_memory_buffer_size=train_cfg.get('bisim_memory_buffer_size', 0),
-        bisim_comparison_size=train_cfg.get('bisim_comparison_size', 20),
     )
     model.to(device)
     
@@ -207,74 +221,10 @@ def load_model_from_path(model_path, device, epoch=None):
     
     return model, model_cfg
 
-class FixedMazeEnv(MazeEnv):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        try:
-            site_id = self.model.site_name2id('target_site')
-            rgba = self.model.site_rgba[site_id]
-            rgba[-1] = 0.0
-            self.model.site_rgba[site_id] = rgba
-        except Exception:
-            pass
-        if hasattr(self, 'observation_space'):
-            try:
-                self.observation_space.dtype = np.float32
-            except Exception:
-                pass
-        
-        if len(self.goal_locations) == 1:
-            self.set_target(np.array(self.goal_locations[0]).astype(np.float32))
-        elif len(self.goal_locations) > 1:
-            raise ValueError("More than 1 goal specified!")
-        else:
-            self.set_target(np.array(self.reset_locations[0]).astype(np.float32))
-    
-    def _render_frame(self):
-        if self.sim.render_contexts:
-            cam = self.sim.render_contexts[0].cam
-            cam.type      = 1
-            cam.azimuth   = 90
-            cam.elevation = -90
-            cam.distance  = 4
-        return self.sim.render(224, 224)
-    
-    def set_target(self, target_location=None):
-        if target_location is None:
-            reset_location = np.array(self.empty_and_goal_locations[0]).astype(np.float32)
-            target_location = reset_location
-        target_location = np.array(target_location, dtype=np.float32)
-        self._target = target_location
-
-    def reset_model(self):
-        reset_location = np.array(self.empty_and_goal_locations[0]).astype(np.float32)
-        qpos = reset_location
-        qvel = self.init_qvel
-        self.set_state(qpos, qvel)
-        if self.reset_target:
-            self.set_target()
-        return self._get_obs()
-
-    def reset_to_location(self, location):
-        self.sim.reset()
-        reset_location = np.array(location).astype(np.float32)
-        qpos = reset_location
-        qvel = self.init_qvel
-        self.set_state(qpos, qvel)
-        return self._get_obs()
-    
-    def reset_deterministic(self, qpos, qvel):
-        """Reset to exact state without any randomness"""
-        self.sim.reset()
-        self.set_state(np.array(qpos, dtype=np.float32), np.array(qvel, dtype=np.float32))
-        return self._get_obs()
-
-    def set_marker(self):
-        pass
-
 def create_env_with_background(background_config):
     """Create environment with specific background"""
-    env = FixedMazeEnv(
+    env = PointMazeWrapper(
+        maze_spec=U_MAZE,
         return_value='state',
         background_builtin=background_config["builtin"],
         background_rgb1=background_config["rgb1"],
@@ -298,21 +248,29 @@ def generate_observations(state, backgrounds):
             env = create_env_with_background(bg_config)
             env.seed(42)
             
-            env.reset_deterministic(state[:2], state[2:4])  # qpos, qvel
+            # prepare environment for rendering
+            env.prepare_for_render()
+            
+            # set the exact state
+            env.set_state(state[:2], state[2:4])
+            env.set_marker()
 
             # get observation
             obs = env._get_obs()
             visual = env._render_frame()
             
-            observations[bg_name] = {
+            obs_dict = {
                 'visual': visual,
                 'proprio': obs['proprio']
             }
             
+            observations[bg_name] = obs_dict
             env.close()
             
         except Exception as e:
             print(f"    Error generating observation for background {bg_name}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     return observations
