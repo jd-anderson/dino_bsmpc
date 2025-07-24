@@ -30,6 +30,7 @@ ALL_MODEL_KEYS = [
     "decoder",
     "proprio_encoder",
     "action_encoder",
+    "bisim_model",
 ]
 
 
@@ -411,27 +412,17 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
     elif not train_cfg.has_decoder:
         result["decoder"] = None
 
-    # Check if we need the bisimulation model
-    if train_cfg.get('has_bisim', False) and "bisim_model" not in result:
-        from models.bisim import BisimModel
-
-        if result["encoder"].latent_ndim == 1:  # if feature is 1D
-            input_dim = result["encoder"].emb_dim
-        else:
-            decoder_scale = 16  # from vqvae
-            num_side_patches = train_cfg.img_size // decoder_scale
-            num_patches = num_side_patches ** 2
-            input_dim = num_patches * result["encoder"].emb_dim
-
-        result["bisim_model"] = BisimModel(
-            input_dim=input_dim,
-            latent_dim=train_cfg.get('bisim_latent_dim', 64),
-            hidden_dim=train_cfg.get('bisim_hidden_dim', 256),
-            action_dim=train_cfg.action_emb_dim,
-        )
-        print(f"Created new bisimulation model with latent dim {train_cfg.get('bisim_latent_dim', 64)}")
-    elif not train_cfg.get('has_bisim', False):
+    if not train_cfg.get('has_bisim', False):
         result["bisim_model"] = None
+
+    if result.get("bisim_model") is not None:
+        actual_bisim_latent_dim = result["bisim_model"].latent_dim
+        actual_bisim_hidden_dim = result["bisim_model"].hidden_dim
+        # print(f"DEBUG: Using actual bisimulation parameters from checkpoint: latent_dim={actual_bisim_latent_dim}, hidden_dim={actual_bisim_hidden_dim}")
+    else:
+        actual_bisim_latent_dim = train_cfg.get('bisim_latent_dim', 64)
+        actual_bisim_hidden_dim = train_cfg.get('bisim_hidden_dim', 256)
+        # print(f"DEBUG: Using config bisimulation parameters: latent_dim={actual_bisim_latent_dim}, hidden_dim={actual_bisim_hidden_dim}")
 
     model = hydra.utils.instantiate(
         train_cfg.model,
@@ -447,6 +438,8 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
         num_action_repeat=num_action_repeat,
         num_proprio_repeat=train_cfg.num_proprio_repeat,
         bisim_coef=train_cfg.get('bisim_coef', 1.0),
+        bisim_latent_dim=actual_bisim_latent_dim,
+        bisim_hidden_dim=actual_bisim_hidden_dim,
         train_bisim=train_cfg.model.get('train_bisim', True),
     )
     model.to(device)

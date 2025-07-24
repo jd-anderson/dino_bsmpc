@@ -21,6 +21,8 @@ class VWorldModel(nn.Module):
             bisim_hidden_dim=256,  # New parameter for bisimulation hidden dimension
             bisim_coef=1.0,  # New parameter for bisimulation loss coefficient
             train_bisim=True,  # New parameter to control training of bisimulation model
+            bisim_memory_buffer_size=0,  # Size of memory buffer for cross-batch bisimulation (0 = disabled)
+            bisim_comparison_size=20,  # Total number of states to compare in bisimulation learning
             proprio_dim=0,
             action_dim=0,
             concat_dim=0,
@@ -50,10 +52,31 @@ class VWorldModel(nn.Module):
             self.bisim_hidden_dim= bisim_hidden_dim
             self.train_bisim = train_bisim
             self.bisim_coef = bisim_coef
+
+            # memory buffer for cross-batch bisimulation learning
+            self.bisim_memory_buffer_size = bisim_memory_buffer_size
+            self.bisim_comparison_size = bisim_comparison_size
+            self.use_memory_buffer = bisim_memory_buffer_size > 0
+
+            if self.use_memory_buffer:
+                # init memory buffers
+                action_emb_dim = getattr(action_encoder, 'emb_dim', action_dim)
+
+                self.register_buffer('bisim_memory_states', torch.zeros(bisim_memory_buffer_size, num_hist, bisim_latent_dim))
+                self.register_buffer('bisim_memory_next_states', torch.zeros(bisim_memory_buffer_size, num_hist, bisim_latent_dim))
+                self.register_buffer('bisim_memory_actions', torch.zeros(bisim_memory_buffer_size, num_hist, action_emb_dim))
+                self.register_buffer('bisim_memory_rewards', torch.zeros(bisim_memory_buffer_size, num_hist, 1))
+                self.register_buffer('bisim_memory_ptr', torch.zeros(1, dtype=torch.long))
+                self.register_buffer('bisim_memory_full', torch.zeros(1, dtype=torch.bool))
+                print(f"Initialized bisimulation memory buffer with size {bisim_memory_buffer_size}")
+                print(f"Action embedding dimension: {action_emb_dim}")
+            else:
+                print("Bisimulation memory buffer disabled (size=0)")
         else:
             self.bisim_model = None
             self.train_bisim = False
             self.bisim_coef = 0.0
+            self.use_memory_buffer = False
 
         self.train_encoder = train_encoder
         self.train_predictor = train_predictor
@@ -82,6 +105,11 @@ class VWorldModel(nn.Module):
             print(f"bisim_latent_dim: {self.bisim_latent_dim}")
             print(f"train_bisim: {self.train_bisim}")
             print(f"bisim_coef: {self.bisim_coef}")
+
+            if self.use_memory_buffer:
+                print(f"bisim_memory_buffer_size: {self.bisim_memory_buffer_size}")
+                print(f"bisim_comparison_size: {self.bisim_comparison_size}")
+
         print(f"train_w_std_loss: {self.train_w_std_loss}")
         print(f"train_w_reward_loss: {self.train_w_reward_loss}")
 
@@ -280,7 +308,66 @@ class VWorldModel(nn.Module):
 
         return next_z_bisim
 
-    
+    def update_memory_buffer(self, z_bisim, next_z_bisim, action_emb, reward):
+        """
+        Update the memory buffer with new samples
+        input: z_bisim: (b, t, bisim_dim)
+               next_z_bisim: (b, t, bisim_dim)
+               action_emb: (b, t, action_emb_dim)
+               reward: (b, t, 1)
+        """
+        if not self.use_memory_buffer or not self.training:
+            return
+
+        b, t, _ = z_bisim.shape
+
+        # store samples in memory buffer using circular buffer
+        for i in range(b):
+            ptr = self.bisim_memory_ptr.item()
+
+            # store the sample
+            self.bisim_memory_states[ptr] = z_bisim[i].detach()
+            self.bisim_memory_next_states[ptr] = next_z_bisim[i].detach()
+            self.bisim_memory_actions[ptr] = action_emb[i].detach()
+            self.bisim_memory_rewards[ptr] = reward[i].detach()
+
+            # update pointer
+            ptr = (ptr + 1) % self.bisim_memory_buffer_size
+            self.bisim_memory_ptr[0] = ptr
+
+            # mark buffer as full if we've wrapped around
+            if ptr == 0:
+                self.bisim_memory_full[0] = True
+
+    def sample_from_memory_buffer(self, num_samples):
+        """
+        Sample from the memory buffer for bisimulation comparisons
+        input: num_samples: int
+        output: dict with sampled states, next_states, actions, rewards
+        """
+        if not self.use_memory_buffer:
+            return None
+
+        # determine how many samples are available
+        if self.bisim_memory_full.item():
+            available_samples = self.bisim_memory_buffer_size
+        else:
+            available_samples = self.bisim_memory_ptr.item()
+
+        if available_samples == 0:
+            return None
+
+        # sample random indices
+        num_samples = min(num_samples, available_samples)
+        indices = torch.randperm(available_samples, device=self.bisim_memory_states.device)[:num_samples]
+
+        return {
+            'states': self.bisim_memory_states[indices],
+            'next_states': self.bisim_memory_next_states[indices],
+            'actions': self.bisim_memory_actions[indices],
+            'rewards': self.bisim_memory_rewards[indices]
+        }
+
     # mod 1 function on BSMPC
     def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, reward=None, discount=0.99):
         """
@@ -300,10 +387,6 @@ class VWorldModel(nn.Module):
         # print(f"DEBUG - calc_bisim_loss input z_bisim dimensions: {z_bisim.shape}")
         # print(f"DEBUG - calc_bisim_loss input action_emb dimensions: {action_emb.shape}")
 
-        # Permute batch for comparison
-        perm = torch.randperm(batch_size, device=z_bisim.device)
-        z_bisim2 = z_bisim[:, :, :].clone()[perm]
-
         # Predict rewards if not provided
         if reward is None:
             z_bisim_flat = z_bisim.reshape(b * t, d)
@@ -319,20 +402,100 @@ class VWorldModel(nn.Module):
                 reward = self.bisim_model.predict_reward(z_bisim_flat, action_emb_flat)
             reward = reward.reshape(b, t, 1)
 
-        reward2 = reward.clone()[perm]
+        # prepare comparison samples
+        if self.use_memory_buffer and self.training:
+            # check how many samples are available in memory
+            if self.bisim_memory_full.item():
+                available_memory_samples = self.bisim_memory_buffer_size
+            else:
+                available_memory_samples = self.bisim_memory_ptr.item()
 
-        next_z_bisim2 = next_z_bisim.clone()[perm]
+            # we want comparison_size total samples: full current batch + memory samples
+            memory_samples_needed = self.bisim_comparison_size - batch_size
 
-        # Calculate bisimulation loss
-        if hasattr(self.bisim_model, "module"):
-            bisim_loss = self.bisim_model.module.calc_bisim_loss(
-                z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
-            )
+            # check if we have enough memory samples
+            if available_memory_samples >= memory_samples_needed:
+                # cross-batch comparison: use full current batch + memory samples
+                memory_data = self.sample_from_memory_buffer(memory_samples_needed)
+
+                # print(f"DEBUG: Cross-batch comparison - Total: {self.bisim_comparison_size}, Memory: {memory_samples_needed}, Current: {batch_size}")
+
+                # get memory samples and move to same device as current batch
+                memory_states = memory_data['states'].to(z_bisim.device)
+                memory_next_states = memory_data['next_states'].to(z_bisim.device)
+                memory_rewards = memory_data['rewards'].to(z_bisim.device)
+
+                # combine current batch with memory samples
+                z_bisim_combined = torch.cat([z_bisim, memory_states], dim=0)
+                next_z_bisim_combined = torch.cat([next_z_bisim, memory_next_states], dim=0)
+                reward_combined = torch.cat([reward, memory_rewards], dim=0)
+
+                # create permuted version for comparison
+                perm = torch.randperm(self.bisim_comparison_size, device=z_bisim.device)
+                z_bisim2 = z_bisim_combined[perm]
+                next_z_bisim2 = next_z_bisim_combined[perm]
+                reward2 = reward_combined[perm]
+
+                # calculate bisimulation loss
+                if hasattr(self.bisim_model, "module"):
+                    bisim_loss = self.bisim_model.module.calc_bisim_loss(
+                        z_bisim_combined, z_bisim2, reward_combined, reward2,
+                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss
+                    )
+                else:
+                    bisim_loss = self.bisim_model.calc_bisim_loss(
+                        z_bisim_combined, z_bisim2, reward_combined, reward2,
+                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss
+                    )
+
+                # take only the loss corresponding to current batch samples
+                bisim_loss = bisim_loss[:batch_size]
+            else:
+                # not enough memory samples - fallback to batch_size comparison
+                # print(f"DEBUG: Fallback to batch_size comparison - Available memory: {available_memory_samples}, Need: {memory_samples_needed}")
+
+                perm = torch.randperm(batch_size, device=z_bisim.device)
+                z_bisim2 = z_bisim[perm]
+                next_z_bisim2 = next_z_bisim[perm]
+                reward2 = reward[perm]
+
+                # calculate bisimulation loss
+                if hasattr(self.bisim_model, "module"):
+                    bisim_loss = self.bisim_model.module.calc_bisim_loss(
+                        z_bisim, z_bisim2, reward, reward2,
+                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                    )
+                else:
+                    bisim_loss = self.bisim_model.calc_bisim_loss(
+                        z_bisim, z_bisim2, reward, reward2,
+                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                    )
         else:
-            bisim_loss = self.bisim_model.calc_bisim_loss(
-                z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
-            )
+            # memory buffer disabled or eval mode - use batch_size comparison
+            # print(f"DEBUG: Memory buffer disabled or eval mode - Using batch_size: {batch_size}")
 
+            perm = torch.randperm(batch_size, device=z_bisim.device)
+            z_bisim2 = z_bisim[perm]
+            next_z_bisim2 = next_z_bisim[perm]
+            reward2 = reward[perm]
+
+            # calculate bisimulation loss
+            if hasattr(self.bisim_model, "module"):
+                bisim_loss = self.bisim_model.module.calc_bisim_loss(
+                    z_bisim, z_bisim2, reward, reward2,
+                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                )
+            else:
+                bisim_loss = self.bisim_model.calc_bisim_loss(
+                    z_bisim, z_bisim2, reward, reward2,
+                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                )
+
+        # update memory buffer with current batch
+        if self.training:
+            self.update_memory_buffer(z_bisim, next_z_bisim, action_emb, reward)
+
+        # print(f"DEBUG: Final bisim_loss shape: {bisim_loss.shape}")
         return bisim_loss
 
     def forward(self, obs, act):
