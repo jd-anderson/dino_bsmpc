@@ -20,6 +20,7 @@ class VWorldModel(nn.Module):
             bisim_latent_dim=64,  # New parameter for bisimulation latent dimension
             bisim_hidden_dim=256,  # New parameter for bisimulation hidden dimension
             bisim_coef=1.0,  # New parameter for bisimulation loss coefficient
+            var_loss_coef=1.0,
             train_bisim=True,  # New parameter to control training of bisimulation model
             bisim_memory_buffer_size=0,  # Size of memory buffer for cross-batch bisimulation (0 = disabled)
             bisim_comparison_size=20,  # Total number of states to compare in bisimulation learning
@@ -78,6 +79,8 @@ class VWorldModel(nn.Module):
             self.bisim_coef = 0.0
             self.use_memory_buffer = False
 
+        self.var_loss_coef = var_loss_coef
+        
         self.train_encoder = train_encoder
         self.train_predictor = train_predictor
         self.train_decoder = train_decoder

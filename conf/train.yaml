@@ -61,6 +61,7 @@ has_bisim: True  # Enable bisimulation model
 bisim_latent_dim: 100  # Latent dimension for bisimulation model
 bisim_hidden_dim: 200  # Hidden dimension for bisimulation model
 bisim_coef: 1  # Coefficient for bisimulation loss
+var_loss_coef: 1
 bisim_memory_buffer_size: 1000  # Size of memory buffer for cross-batch bisimulation (0 = disabled)
 bisim_comparison_size: 100  # Total number of states to compare in bisimulation learning
 

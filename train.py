@@ -353,6 +353,7 @@ class Trainer:
             num_action_repeat=self.cfg.num_action_repeat,
             num_proprio_repeat=self.cfg.num_proprio_repeat,
             bisim_coef=self.cfg.get('bisim_coef', 1.0),
+            var_loss_coef=self.cfg.get('var_loss_coef', 1.0),
             train_bisim=self.train_bisim,
             train_w_std_loss=self.train_w_std_loss,
             train_w_reward_loss=self.train_w_reward_loss,
