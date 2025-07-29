@@ -367,6 +367,80 @@ class VWorldModel(nn.Module):
             'actions': self.bisim_memory_actions[indices],
             'rewards': self.bisim_memory_rewards[indices]
         }
+    
+    def var_loss(self, z_bisim, var_target=0.5, epsilon=0):
+        """
+        Calculate variance loss (core)
+        input: z_bisim: (b, t, bisim_dim)
+        var_target: variance parameter
+        epsilon: variance parameter
+        output: var_loss: (t)
+        """
+
+        # Compute variance
+        var = z_bisim.var(dim=0) # (T,D)
+        
+        # Compute sqrt(var + epsilon)
+        std = torch.sqrt(var + epsilon)
+        
+        # Compute max(0, var_target - std)
+        loss = torch.relu(var_target - std)
+
+        return loss.mean(dim=1) # reduce the dimension to (T)
+    
+    
+    def calc_var_loss(self, z_bisim, next_z_bisim, var_target=0.5, epsilon=0):
+        
+        b, t, d = z_bisim.shape
+        batch_size = b
+    
+        # prepare comparison samples
+        if self.use_memory_buffer and self.training:
+            # check how many samples are available in memory
+            if self.bisim_memory_full.item():
+                available_memory_samples = self.bisim_memory_buffer_size
+            else:
+                available_memory_samples = self.bisim_memory_ptr.item()
+
+            # we want comparison_size total samples: full current batch + memory samples
+            memory_samples_needed = self.bisim_comparison_size - batch_size
+
+            # check if we have enough memory samples
+            if available_memory_samples >= memory_samples_needed:
+                # cross-batch comparison: use full current batch + memory samples
+                memory_data = self.sample_from_memory_buffer(memory_samples_needed)
+
+                # print(f"DEBUG: Cross-batch comparison - Total: {self.bisim_comparison_size}, Memory: {memory_samples_needed}, Current: {batch_size}")
+
+                # get memory samples and move to same device as current batch
+                memory_states = memory_data['states'].to(z_bisim.device)
+                memory_next_states = memory_data['next_states'].to(z_bisim.device)
+
+                # combine current batch with memory samples
+                z_bisim_combined = torch.cat([z_bisim, memory_states], dim=0)
+                next_z_bisim_combined = torch.cat([next_z_bisim, memory_next_states], dim=0)
+
+                T_Plus_1_z_bisim_combined = torch.cat([z_bisim_combined, next_z_bisim_combined], dim=0)
+
+
+                # calculate the loss
+                loss = self.var_loss(T_Plus_1_z_bisim_combined, var_target, epsilon)
+
+            else:
+                # not enough memory samples - fallback to batch_size comparison
+                T_Plus_1_z_bisim = torch.cat([z_bisim, next_z_bisim], dim=0)
+
+                # calculate the loss directly
+                loss = self.var_loss(T_Plus_1_z_bisim, var_target, epsilon)
+        else:
+        # memory buffer disabled or eval mode - use batch_size comparison
+            T_Plus_1_z_bisim = torch.cat([z_bisim, next_z_bisim], dim=0)
+
+            # calculate the loss directly
+            loss = self.var_loss(T_Plus_1_z_bisim, var_target, epsilon)
+
+        return loss # dimension=(T+1), or memory sample+1
+
 
     # mod 1 function on BSMPC
     def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, reward=None, discount=0.99):
@@ -535,6 +609,14 @@ class VWorldModel(nn.Module):
 
             loss_components["bisim_loss"] = bisim_loss
             loss = loss + self.bisim_coef * bisim_loss
+
+            var_loss = self.calc_var_loss(
+                z_bisim_src,
+                next_z_bisim_src
+            ).mean()
+
+            loss_components["var_loss"] = var_loss
+            loss = loss + self.var_loss_coef * var_loss
 
         if self.predictor is not None:
             z_pred = self.predict(z_src)
