@@ -370,7 +370,7 @@ class VWorldModel(nn.Module):
             'actions': self.bisim_memory_actions[indices],
             'rewards': self.bisim_memory_rewards[indices]
         }
-    
+    '''    
     def var_loss(self, z_bisim, var_target=0.5, epsilon=0):
         """
         Calculate variance loss (core)
@@ -386,6 +386,13 @@ class VWorldModel(nn.Module):
         # Compute sqrt(var + epsilon)
         std = torch.sqrt(var + epsilon)
         
+        # If NaN appears, fallback to using var directly
+        nan_mask = torch.isnan(std)
+        if nan_mask.any():
+            # Replace NaN entries with var values
+            std = var
+            print(f"WARNING: NaN or Inf in variation computation")
+            
         # Compute max(0, var_target - std)
         loss = torch.relu(var_target - std)
 
@@ -394,6 +401,15 @@ class VWorldModel(nn.Module):
     
     def calc_var_loss(self, z_bisim, next_z_bisim, var_target=0.5, epsilon=0):
         
+        """
+        Calculate variance loss with memory buffer
+        input: z_bisim: (b, t, bisim_dim)
+        next_z_bisim: (b, t, bisim_dim)
+        var_target: variance parameter
+        epsilon: variance parameter
+        output: var_loss: (t)
+        """
+
         b, t, d = z_bisim.shape
         batch_size = b
     
@@ -444,6 +460,7 @@ class VWorldModel(nn.Module):
 
         return loss # dimension=(T+1), or memory sample+1
 
+    '''
 
     # mod 1 function on BSMPC
     def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, reward=None, discount=0.99):
@@ -613,13 +630,6 @@ class VWorldModel(nn.Module):
             loss_components["bisim_loss"] = bisim_loss
             loss = loss + self.bisim_coef * bisim_loss
 
-            var_loss = self.calc_var_loss(
-                z_bisim_src,
-                next_z_bisim_src
-            ).mean()
-
-            loss_components["var_loss"] = var_loss
-            loss = loss + self.var_loss_coef * var_loss
 
         if self.predictor is not None:
             z_pred = self.predict(z_src)
