@@ -139,7 +139,13 @@ class CEMPlanner(BasePlanner):
                 #     print(f"CEM PREDICTION: Current trajectory: {traj+1}/{n_evals}, iteration: {i+1}/{self.opt_steps}")
 
                 # Compute loss
-                loss = self.objective_fn(i_z_obses, cur_z_obs_g)
+                if 'bisim' in locals() and bisim_z is not None:
+                    pred_dict = {"bisim": bisim_z}
+                    tgt_bisim = self.wm.encode_bisim(cur_z_obs_g)
+                    tgt_dict = {"bisim": tgt_bisim}
+                    loss = self.objective_fn(pred_dict, tgt_dict)
+                else:
+                    loss = self.objective_fn(i_z_obses, cur_z_obs_g)
                 
                 # Ensure loss has the right dimensionality (num_samples,)
                 if loss.ndim > 1:

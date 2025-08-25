@@ -80,41 +80,34 @@ def create_objective_fn(alpha, base, mode="last", use_bisim=False, bisim_weight=
 
     def objective_fn_last_bisim_space(z_obs_pred, z_obs_tgt):
         """
-        Loss calculated on the last pred frame using bisimulation embeddings instead of DINOv2.
+        Loss calculated on the last pred frame in bisimulation space.
         Args:
-            z_obs_pred: dict, {'visual': (B, T, *D_visual), 'proprio': (B, T, *D_proprio)}
-            z_obs_tgt: dict, {'visual': (B, T, *D_visual), 'proprio': (B, T, *D_proprio)}
+            z_obs_pred: dict; expected to contain either
+                - {'bisim': (B, T, D_bisim)} when rollout provides bisim directly, or
+                - {'visual': ..., 'proprio': ...} as fallback (will be mapped by wm.encode_bisim)
+            z_obs_tgt: same structure as z_obs_pred
         Returns:
             loss: tensor (B, )
         """
-        # Only use bisimulation if the world model is provided and has bisimulation
-        if wm is not None and hasattr(wm, 'has_bisim') and wm.has_bisim:
-            # Use the world model's encode_bisim function to replace DINOv2 embeddings
-            encode_bisim = wm.encode_bisim
+        assert wm is not None and hasattr(wm, 'has_bisim') and wm.has_bisim, "Bisimulation model required for bisim planning"
 
-            # Get bisimulation embeddings instead of using DINOv2 embeddings directly
-            bisim_pred_visual = encode_bisim(
-                {"visual": z_obs_pred["visual"][:, -1:], "proprio": z_obs_pred["proprio"][:, -1:]})
-            bisim_tgt_visual = encode_bisim({"visual": z_obs_tgt["visual"], "proprio": z_obs_tgt["proprio"]})
-
-            # Use the same loss calculation logic as the standard approach, but with bisimulation embeddings
-            loss_visual = metric(bisim_pred_visual, bisim_tgt_visual).mean(
-                dim=tuple(range(1, bisim_pred_visual.ndim))
-            )
-            loss_proprio = metric(z_obs_pred["proprio"][:, -1:], z_obs_tgt["proprio"]).mean(
-                dim=tuple(range(1, z_obs_pred["proprio"].ndim))
-            )
-            loss = loss_visual + alpha * loss_proprio
-            return loss
+        # If bisim embeddings provided directly, use them. Otherwise, compute from visual/proprio
+        if 'bisim' in z_obs_pred and 'bisim' in z_obs_tgt:
+            bisim_pred = z_obs_pred['bisim'][:, -1:]
+            bisim_tgt = z_obs_tgt['bisim']
         else:
-            # Fall back to standard loss if bisimulation isn't available
-            loss_visual = metric(z_obs_pred["visual"][:, -1:], z_obs_tgt["visual"]).mean(
-                dim=tuple(range(1, z_obs_pred["visual"].ndim))
-            )
-            loss_proprio = metric(z_obs_pred["proprio"][:, -1:], z_obs_tgt["proprio"]).mean(
-                dim=tuple(range(1, z_obs_pred["proprio"].ndim))
-            )
-            return loss_visual + alpha * loss_proprio
+            encode_bisim = wm.encode_bisim
+            bisim_pred = encode_bisim({
+                'visual': z_obs_pred['visual'][:, -1:],
+                'proprio': z_obs_pred['proprio'][:, -1:]
+            })
+            bisim_tgt = encode_bisim({
+                'visual': z_obs_tgt['visual'],
+                'proprio': z_obs_tgt['proprio']
+            })
+
+        loss = metric(bisim_pred, bisim_tgt).mean(dim=tuple(range(1, bisim_pred.ndim)))
+        return loss
 
     def objective_fn_all(z_obs_pred, z_obs_tgt):
         """
