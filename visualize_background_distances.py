@@ -37,9 +37,11 @@ MODEL_TITLES = {
     # "bisim_100_mb_500_50_0_7": ("Bisim 100; memory buffer; epoch 25", 25),
     # "mod1_bisim_100_coef_1": ("Bisim 100; no memory buffer; epoch 50", 50),
     # "mod1_bisim_512_coef_1": "Bisim 512; no memory buffer",
-    "bisim_512_mb_1000_200": ("Bisim 512, epoch 25 mb 200", 25)
+    # "bisim_512_mb_1000_200": ("Bisim 512, epoch 25 mb 200", 25),
     # "mod1_bisim_1024_coef_1": "Bisim 1024; no memory buffer",
     # "mod1_bisim_5000_coef_1/21-59-56": "Bisim 5000; no memory buffer",
+    "jepa_512": "Bisim 512",
+    "jepa_512_vc_reg": "Bisim 512, VC Reg",
 }
 
 # background config
@@ -50,12 +52,12 @@ BACKGROUNDS = {
         "rgb2": "0.1 0.2 0.3",
         "title": "No Change"
     },
-    # "slight_change": {
-    #     "builtin": "checker",
-    #     "rgb1": "0.4 0.5 0.6",
-    #     "rgb2": "0.3 0.4 0.5",
-    #     "title": "Slight Change"
-    # },
+    "slight_change": {
+        "builtin": "checker",
+        "rgb1": "0.4 0.5 0.6",
+        "rgb2": "0.3 0.4 0.5",
+        "title": "Slight Change"
+    },
     "gradient": {
         "builtin": "gradient",
         "rgb1": "0.2 0.3 0.4",
@@ -309,18 +311,19 @@ def encode_observations(observations, model, device):
                 'proprio': proprio
             }
 
-            # encode observation
             with torch.no_grad():
                 model.eval()
+
+                # get DinoV2 embeddings (directly from encoder forward pass)
+                b = visual.shape[0]
+                vis = model.encoder_transform(visual.view(b, visual.shape[2], visual.shape[3], visual.shape[4]))
+                dino_tokens = model.encoder.forward(vis)  # (b, p, d)
+                dinov2_emb = dino_tokens.flatten(1).squeeze().cpu().numpy()
+
+                # get bisimulation embeddings via encode_bisim on encode_obs output
                 z_obs = model.encode_obs(obs_dict)
-
-                # get DinoV2 embeddings
-                dinov2_emb = z_obs['visual'].flatten(2)
-                dinov2_emb = dinov2_emb.squeeze().cpu().numpy()
-
-                # get bisimulation embeddings if available
                 bisim_emb = None
-                if model.has_bisim:
+                if getattr(model, 'has_bisim', False):
                     z_bisim = model.encode_bisim(z_obs)
                     bisim_emb = z_bisim.squeeze().cpu().numpy()
 
@@ -437,105 +440,126 @@ def pretty_print_distances(distances):
 
 
 def create_visualization(all_encodings, model_names, model_titles):
-    """Create the complete visualization"""
-    n_models = len(model_names)
-    n_cols = n_models + 1  # +1 for DinoV2
+    """Create one figure per model with two subplots: left=DINOv2, right=Bisim.
+    Colors = states, Markers = backgrounds.
+    """
+    color_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', ['red', 'blue', 'green', 'purple', 'orange', 'brown'])
+    background_order = list(BACKGROUNDS.keys())
+    default_markers = ['o', 's', '^', 'D', 'P', 'X']
+    bg_marker_map = {bg: default_markers[i % len(default_markers)] for i, bg in enumerate(background_order)}
 
-    n_states = len(set(key.split('_')[1] for model_enc in all_encodings.values() for key in model_enc.keys()))
-    if n_states == 0:
-        n_states = 1
+    figs = []
+    for model_name in model_names:
+        if model_name not in all_encodings:
+            continue
 
-    fig, axes = plt.subplots(n_states, n_cols, figsize=(5 * n_cols, 4 * n_states))
+        dino_pts, dino_states, dino_bgs = [], [], []
+        bisim_pts, bisim_states, bisim_bgs = [], [], []
+        model_enc = all_encodings[model_name]
+        for key, enc in model_enc.items():
+            # key format: 'state_{idx}_{bg_name}'
+            try:
+                _, state_str, bg_name = key.split('_', 2)
+                state_id = int(state_str) if state_str.isdigit() else 0
+            except Exception:
+                state_id, bg_name = 0, 'unknown'
+            if enc.get('dinov2') is not None:
+                dino_pts.append(enc['dinov2'].reshape(-1))
+                dino_states.append(state_id)
+                dino_bgs.append(bg_name)
+            if enc.get('bisim') is not None:
+                bisim_pts.append(enc['bisim'].reshape(-1))
+                bisim_states.append(state_id)
+                bisim_bgs.append(bg_name)
 
-    # handle different axes shapes
-    if n_states == 1 and n_cols == 1:
-        axes = np.array([[axes]])
-    elif n_states == 1:
-        axes = axes.reshape(1, -1)
-    elif n_cols == 1:
-        axes = axes.reshape(-1, 1)
-    elif len(axes.shape) == 1:
-        axes = axes.reshape(1, -1)
+        # Create single figure with two subplots
+        fig, (ax_dino, ax_bisim) = plt.subplots(1, 2, figsize=(12, 5))
+        plt.subplots_adjust(bottom=0.22, wspace=0.25)
 
-    colors = ['red', 'blue', 'green']
-    markers = ['o', 's', '^']
-
-    # process each state
-    for state_idx in range(n_states):
-        # plot DinoV2 space
-        ax = axes[state_idx, 0]
-
-        # collect DinoV2 encodings for this state
-        state_encodings = {}
-        for bg_name in BACKGROUNDS.keys():
-            # use first model's DinoV2 encoding (should be same across models)
-            first_model = model_names[0]
-            key = f"state_{state_idx}_{bg_name}"
-            if first_model in all_encodings and key in all_encodings[first_model]:
-                state_encodings[bg_name] = all_encodings[first_model][key]
-
-        embeddings_2d, labels, distances = compute_pca_and_distances(state_encodings, 'dinov2')
-
-        if embeddings_2d is not None and len(embeddings_2d) > 0:
-            for i, (bg_name, emb_2d) in enumerate(zip(labels, embeddings_2d)):
-                bg_config = BACKGROUNDS[bg_name]
-                ax.scatter(emb_2d[0], emb_2d[1], c=colors[i % len(colors)], marker=markers[i % len(markers)],
-                           s=100, label=bg_config['title'], alpha=0.7)
-
-            ax.set_title('DinoV2 Space')
-            ax.grid(True, alpha=0.3)
-
-            ax.legend(bbox_to_anchor=(0.5, -0.25), loc='upper center', fontsize=8, ncol=3, framealpha=0.9)
-
-            if distances:
-                dist_text = '\n'.join([f"({i + 1}) {k}: {v:.6f}" for i, (k, v) in enumerate(distances.items())])
-                ax.text(0.5, -0.45, dist_text, transform=ax.transAxes,
-                        horizontalalignment='center', verticalalignment='top', fontsize=8,
-                        bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
-        else:
-            ax.text(0.5, 0.5, 'No DinoV2 data', ha='center', va='center', transform=ax.transAxes)
-            ax.set_title(f'DinoV2 Space')
-
-        # plot bisimulation spaces
-        for col_idx, model_name in enumerate(model_names):
-            col = col_idx + 1
-            ax = axes[state_idx, col]
-
-            # get encodings for this model and state
-            state_encodings = {}
-            for bg_name in BACKGROUNDS.keys():
-                key = f"state_{state_idx}_{bg_name}"
-                if model_name in all_encodings and key in all_encodings[model_name]:
-                    state_encodings[bg_name] = all_encodings[model_name][key]
-
-            bg_name = list(state_encodings.keys())[0]
-            embeddings_2d, labels, distances = compute_pca_and_distances(state_encodings, 'bisim')
-
-            if embeddings_2d is not None and len(embeddings_2d) > 0:
-                for i, (bg_name, emb_2d) in enumerate(zip(labels, embeddings_2d)):
-                    bg_config = BACKGROUNDS[bg_name]
-                    ax.scatter(emb_2d[0], emb_2d[1], c=colors[i % len(colors)], marker=markers[i % len(markers)],
-                               s=100, label=bg_config['title'], alpha=0.7)
-
-                title = model_titles.get(model_name, model_name)
-                ax.set_title(f'{title}\n')
-                ax.grid(True, alpha=0.3)
-
-                ax.legend(bbox_to_anchor=(0.5, -0.25), loc='upper center', fontsize=8, ncol=3, framealpha=0.9)
-
-                if distances:
-                    dist_text = '\n'.join([f"({i + 1}) {k}: {v:.6f}" for i, (k, v) in enumerate(distances.items())])
-                    ax.text(0.5, -0.45, dist_text, transform=ax.transAxes,
-                            horizontalalignment='center', verticalalignment='top', fontsize=8,
-                            bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+        # DINO subplot
+        if dino_pts:
+            X = np.vstack(dino_pts)
+            X2 = PCA(n_components=2).fit_transform(X)
+            unique_states = sorted(set(dino_states))
+            state_to_color = {sid: color_cycle[i % len(color_cycle)] for i, sid in enumerate(unique_states)}
+            present_bgs = sorted(set(dino_bgs))
+            # jitter magnitude based on data spread
+            if X2.shape[0] > 1:
+                spread = max(X2[:, 0].std(), X2[:, 1].std())
             else:
-                ax.text(0.5, 0.5, 'No bisim data', ha='center', va='center', transform=ax.transAxes)
-                title = model_titles.get(model_name, model_name)
-                ax.set_title(f'{title}\nBisim Space')
+                spread = 1.0
+            jitter_r = 0.01 * spread if spread > 0 else 1e-3
+            # deterministic offsets per (state, background)
+            def sb_offset(sid, bg):
+                idx = background_order.index(bg) if bg in background_order else 0
+                code = (sid * 131 + idx * 17) % 360
+                angle = 2 * np.pi * (code / 360.0)
+                return np.array([np.cos(angle), np.sin(angle)]) * jitter_r
+            for pt, sid, bg in zip(X2, dino_states, dino_bgs):
+                off = sb_offset(sid, bg)
+                ax_dino.scatter(pt[0] + off[0], pt[1] + off[1],
+                                c=state_to_color[sid], marker=bg_marker_map.get(bg, 'o'),
+                                s=70, alpha=0.7, edgecolors='k', linewidths=0.3)
+            ax_dino.set_title('DINOv2 Space (all states)')
+            ax_dino.grid(True, alpha=0.3)
+        else:
+            ax_dino.text(0.5, 0.5, 'No DINOv2 data', ha='center', va='center', transform=ax_dino.transAxes)
 
-    plt.tight_layout()
-    plt.subplots_adjust(right=0.8)
-    return fig
+        # Bisim subplot
+        if bisim_pts:
+            X = np.vstack(bisim_pts)
+            X2 = PCA(n_components=2).fit_transform(X)
+            unique_states = sorted(set(bisim_states))
+            state_to_color = {sid: color_cycle[i % len(color_cycle)] for i, sid in enumerate(unique_states)}
+            present_bgs = sorted(set(bisim_bgs))
+            if X2.shape[0] > 1:
+                spread = max(X2[:, 0].std(), X2[:, 1].std())
+            else:
+                spread = 1.0
+            jitter_r = 0.01 * spread if spread > 0 else 1e-3
+            def sb_offset(sid, bg):
+                idx = background_order.index(bg) if bg in background_order else 0
+                code = (sid * 131 + idx * 17) % 360
+                angle = 2 * np.pi * (code / 360.0)
+                return np.array([np.cos(angle), np.sin(angle)]) * jitter_r
+            for pt, sid, bg in zip(X2, bisim_states, bisim_bgs):
+                off = sb_offset(sid, bg)
+                ax_bisim.scatter(pt[0] + off[0], pt[1] + off[1],
+                                 c=state_to_color[sid], marker=bg_marker_map.get(bg, 'o'),
+                                 s=70, alpha=0.7, edgecolors='k', linewidths=0.3)
+            title = model_titles.get(model_name, model_name)
+            ax_bisim.set_title(f'Bisimulation Space (all states)\n{title}')
+            ax_bisim.grid(True, alpha=0.3)
+        else:
+            ax_bisim.text(0.5, 0.5, 'No bisim data', ha='center', va='center', transform=ax_bisim.transAxes)
+
+        if dino_pts:
+            unique_states_leg = sorted(set(dino_states))
+            unique_bgs_leg = background_order  # fixed order legends
+            state_to_color_leg = {sid: color_cycle[i % len(color_cycle)] for i, sid in enumerate(unique_states_leg)}
+        elif bisim_pts:
+            unique_states_leg = sorted(set(bisim_states))
+            unique_bgs_leg = background_order
+            state_to_color_leg = {sid: color_cycle[i % len(color_cycle)] for i, sid in enumerate(unique_states_leg)}
+        else:
+            unique_states_leg = []
+            unique_bgs_leg = []
+            state_to_color_leg = {}
+
+        state_handles = [plt.Line2D([], [], color=state_to_color_leg[sid], marker='o', linestyle='', label=f'State {sid}') for sid in unique_states_leg]
+        bg_to_marker_leg = {bg: bg_marker_map.get(bg, 'o') for bg in unique_bgs_leg}
+        # legend label: use BACKGROUNDS title if available, else bg key
+        bg_handles = [plt.Line2D([], [], color='gray', marker=bg_to_marker_leg[bg], linestyle='',
+                                  label=BACKGROUNDS.get(bg, {'title': bg}).get('title', bg)) for bg in unique_bgs_leg]
+
+        if state_handles:
+            fig.legend(handles=state_handles, title='States', loc='lower center', bbox_to_anchor=(0.3, -0.02), ncol=min(len(state_handles), 6))
+        if bg_handles:
+            fig.legend(handles=bg_handles, title='Backgrounds', loc='lower center', bbox_to_anchor=(0.75, -0.02), ncol=min(len(bg_handles), 6))
+
+        figs.append(fig)
+
+    return figs
 
 
 def list_available_checkpoints(model_path):
@@ -670,13 +694,15 @@ def main():
     # create visualization
     print("\nCreating encoding visualization")
     model_titles = {name: config['title'] for name, config in model_configs.items()}
-    fig = create_visualization(all_encodings, available_models, model_titles)
+    figs = create_visualization(all_encodings, available_models, model_titles)
 
     # save and show
-    filename = "distance_visualization.png"
-    fig.savefig(filename, dpi=300, bbox_inches='tight')
-    print(f"Saved encoding visualization to {filename}")
-    plt.show()
+    for fig, model_name in zip(figs, available_models):
+        safe_name = model_name.replace(os.sep, '_')
+        filename = f"distance_visualization_{safe_name}.png"
+        fig.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Saved encoding visualization to {filename}")
+        plt.show()
 
     print(f"\nVisualization complete!")
     print(f"Generated files:")

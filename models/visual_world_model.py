@@ -361,7 +361,29 @@ class VWorldModel(nn.Module):
 
         return z_bisim
 
+    def predict_next_bisim(self, z_bisim, action_emb):
+        """
+        Predicts next bisimulation state
+        input: z_bisim: (b, t, bisim_dim)
+               action_emb: (b, t, action_emb_dim)
+        output: next_z_bisim: (b, t, bisim_dim)
+        """
+        if not self.has_bisim:
+            return None
 
+        b, t, d = z_bisim.shape
+        # print(f"BISIM PREDICTION: Input bisim state shape: {z_bisim.shape}, dim={d}")
+        z_bisim_flat = z_bisim.reshape(b * t, d)
+        action_emb_flat = action_emb.reshape(b * t, -1)
+
+        if hasattr(self.bisim_model, "module"):
+            next_z_bisim = self.bisim_model.module.next(z_bisim_flat, action_emb_flat)
+        else:
+            next_z_bisim = self.bisim_model.next(z_bisim_flat, action_emb_flat)
+        next_z_bisim = next_z_bisim.reshape(b, t, d)
+        # print(f"BISIM PREDICTION: Output next bisim state shape: {next_z_bisim.shape}, dim={d}")
+
+        return next_z_bisim
 
     def update_memory_buffer(self, z_bisim, next_z_bisim, action_emb, reward):
         """
@@ -495,12 +517,12 @@ class VWorldModel(nn.Module):
                 if hasattr(self.bisim_model, "module"):
                     bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.module.calc_bisim_loss(
                         z_bisim_combined, z_bisim2, reward_combined, reward2,
-                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss
+                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                     )
                 else:
                     bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.calc_bisim_loss(
                         z_bisim_combined, z_bisim2, reward_combined, reward2,
-                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss
+                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                     )
 
                 # take only the loss corresponding to current batch samples
@@ -518,12 +540,12 @@ class VWorldModel(nn.Module):
                 if hasattr(self.bisim_model, "module"):
                     bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.module.calc_bisim_loss(
                         z_bisim, z_bisim2, reward, reward2,
-                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                     )
                 else:
                     bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.calc_bisim_loss(
                         z_bisim, z_bisim2, reward, reward2,
-                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                     )
         else:
             # memory buffer disabled or eval mode - use batch_size comparison
@@ -538,12 +560,12 @@ class VWorldModel(nn.Module):
             if hasattr(self.bisim_model, "module"):
                 bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.module.calc_bisim_loss(
                     z_bisim, z_bisim2, reward, reward2,
-                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                 )
             else:
                 bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.calc_bisim_loss(
                     z_bisim, z_bisim2, reward, reward2,
-                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                 )
 
         # update memory buffer with current batch
@@ -582,6 +604,9 @@ class VWorldModel(nn.Module):
             action_emb = self.encode_act(act[:, : self.num_hist])
             next_z_bisim_src = self.predict_bisim(z_bisim_src, action_emb)
 
+            # Standard loss in bisimulation space (L2 between predicted and GT next states)
+            standard_l2_loss = self.emb_criterion(next_z_bisim_src, z_bisim_tgt)
+
             # Calculate bisimulation loss
             bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.calc_bisim_loss(
                 z_bisim_src,
@@ -590,7 +615,28 @@ class VWorldModel(nn.Module):
             )
             bisim_loss = bisim_loss.mean()
             loss_components["bisim_loss"] = bisim_loss
-            loss = loss + self.bisim_coef * bisim_loss
+            loss_components["standard_l2_loss"] = standard_l2_loss
+            loss = loss + standard_l2_loss + self.bisim_coef * bisim_loss
+
+        visual_pred = None
+        z_pred = None
+        if self.predictor is not None:
+            z_pred = self.predict(z_src)
+
+            if self.concat_dim == 0:
+                z_proprio_loss = self.emb_criterion(
+                    z_pred[:, :, -2, :], z_tgt[:, :, -2, :].detach()
+                )
+            elif self.concat_dim == 1:
+                z_proprio_loss = self.emb_criterion(
+                    z_pred[:, :, :, -(self.proprio_dim + self.action_dim): -self.action_dim],
+                    z_tgt[:, :, :, -(self.proprio_dim + self.action_dim): -self.action_dim].detach(),
+                )
+            else:
+                z_proprio_loss = 0
+
+            loss = loss + z_proprio_loss
+            loss_components["z_proprio_loss"] = z_proprio_loss
             loss_components["bisim_z_dist"] = z_dist
             loss_components["bisim_r_dist"] = r_dist
             loss_components["bisim_transition_dist"] = transition_dist
@@ -643,6 +689,67 @@ class VWorldModel(nn.Module):
                 visuals: (b, t+n+1, 3, img_size, img_size)
                 z: (b, t+n+1, num_patches, emb_dim)
         """
+        # Log rollout start
+        import json
+
+        def log_rollout(data):
+            """Log rollout details"""
+            # Convert data to JSON-serializable format
+            serializable_data = {}
+            for key, value in data.items():
+                if isinstance(value, np.integer):
+                    serializable_data[key] = int(value)
+                elif isinstance(value, np.floating):
+                    serializable_data[key] = float(value)
+                elif isinstance(value, np.ndarray):
+                    serializable_data[key] = value.tolist()
+                elif isinstance(value, torch.Tensor):
+                    serializable_data[key] = value.detach().cpu().numpy().tolist()
+                elif isinstance(value, (list, tuple)):
+                    # Handle lists/tuples that might contain numpy types
+                    serializable_data[key] = []
+                    for item in value:
+                        if isinstance(item, np.integer):
+                            serializable_data[key].append(int(item))
+                        elif isinstance(item, np.floating):
+                            serializable_data[key].append(float(item))
+                        elif isinstance(item, np.ndarray):
+                            serializable_data[key].append(item.tolist())
+                        elif isinstance(item, torch.Tensor):
+                            serializable_data[key].append(item.detach().cpu().numpy().tolist())
+                        else:
+                            serializable_data[key].append(item)
+                elif isinstance(value, dict):
+                    # Handle nested dictionaries
+                    serializable_data[key] = {}
+                    for k, v in value.items():
+                        if isinstance(v, np.integer):
+                            serializable_data[key][k] = int(v)
+                        elif isinstance(v, np.floating):
+                            serializable_data[key][k] = float(v)
+                        elif isinstance(v, np.ndarray):
+                            serializable_data[key][k] = v.tolist()
+                        elif isinstance(v, torch.Tensor):
+                            serializable_data[key][k] = v.detach().cpu().numpy().tolist()
+                        else:
+                            serializable_data[key][k] = v
+                else:
+                    serializable_data[key] = value
+            
+            log_entry = {
+                "timestamp": np.datetime64('now').astype(str),
+                **serializable_data
+            }
+            with open("rollout_log.json", "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        
+        log_rollout({
+            "event": "rollout_start",
+            "obs_0_shapes": {k: list(v.shape) for k, v in obs_0.items()},
+            "act_shape": list(act.shape),
+            "has_bisim": self.has_bisim,
+        })
+        
         num_obs_init = obs_0['visual'].shape[1]
         act_0 = act[:, :num_obs_init]
         action = act[:, num_obs_init:]
@@ -655,26 +762,155 @@ class VWorldModel(nn.Module):
         z = self.encode(obs_0, act_0)
         t = 0
         inc = 1
+        
+        log_rollout({
+            "event": "rollout_initial_encoding",
+            "num_obs_init": num_obs_init,
+            "act_0_shape": list(act_0.shape),
+            "action_shape": list(action.shape),
+            "z_shape": list(z.shape),
+        })
+        
         while t < action.shape[1]:
             z_pred = self.predict(z[:, -self.num_hist:])
             z_new = z_pred[:, -inc:, ...]
             z_new = self.replace_actions_from_z(z_new, action[:, t: t + inc, :])
             z = torch.cat([z, z_new], dim=1)
             t += inc
+            
+            log_rollout({
+                "event": "rollout_step",
+                "step": t,
+                "z_pred_shape": list(z_pred.shape),
+                "z_new_shape": list(z_new.shape),
+                "z_updated_shape": list(z.shape),
+            })
 
         z_pred = self.predict(z[:, -self.num_hist:])
         z_new = z_pred[:, -1:, ...]  # take only the next pred
         z = torch.cat([z, z_new], dim=1)
         z_obses, z_acts = self.separate_emb(z)
 
+        log_rollout({
+            "event": "rollout_final_prediction",
+            "z_pred_final_shape": list(z_pred.shape),
+            "z_new_final_shape": list(z_new.shape),
+            "z_final_shape": list(z.shape),
+            "z_obses_shapes": {k: list(v.shape) for k, v in z_obses.items()},
+            "z_acts_shape": list(z_acts.shape),
+        })
+
         # If using bisimulation, also return bisimulation embeddings
         if self.has_bisim:
             z_bisim = self.encode_bisim(z_obses)
+            
+            log_rollout({
+                "event": "rollout_bisimulation_encoding",
+                "z_bisim_shape": list(z_bisim.shape),
+                "z_bisim_stats": {
+                    "mean": float(z_bisim.mean().item()),
+                    "std": float(z_bisim.std().item()),
+                    "min": float(z_bisim.min().item()),
+                    "max": float(z_bisim.max().item()),
+                },
+            })
+            
             # print(f"ROLLOUT COMPLETE: Returning with bisimulation embeddings of shape {z_bisim.shape}, dim={z_bisim.shape[-1]}")
             return z_obses, z, z_bisim
 
+        log_rollout({
+            "event": "rollout_complete_no_bisim",
+        })
+        
         # print("ROLLOUT COMPLETE: Returning without bisimulation embeddings")
         return z_obses, z
+    
+    def rollout_bisim(self, obs_0, act):
+        """
+        Rollout in bisimulation space
+        input:  obs_0 (dict): (b, n, 3, img_size, img_size)
+                act: (b, t+n, action_dim)
+        output: embeddings of rollout obs, z for compatibility, z_bisim trajectory
+        """
+        num_obs_init = obs_0['visual'].shape[1]
+        act_0 = act[:, :num_obs_init]
+        action = act[:, num_obs_init:]
+        
+        # Initial encoding to DINOv2 then to bisim
+        z_dino = self.encode(obs_0, act_0)
+        z_obses_init, _ = self.separate_emb(z_dino)
+        z_bisim = self.encode_bisim(z_obses_init)
+        
+        # Initialize action history with initial actions
+        action_history = act_0  # (b, num_obs_init, action_dim)
+        
+        # Rollout using ViT predictor (sequence modeling)
+        
+        t = 0
+        inc = 1
+        while t < action.shape[1]:
+            # Update action history with current action
+            current_action = action[:, t: t + inc, :]
+            action_history = torch.cat([action_history, current_action], dim=1)
+            
+            # Get the last num_hist actions for prediction
+            if action_history.shape[1] >= self.num_hist:
+                hist_actions = action_history[:, -self.num_hist:]
+            else:
+                # Pad with zeros at the beginning if we don't have enough history
+                pad_size = self.num_hist - action_history.shape[1]
+                padding = torch.zeros(action_history.shape[0], pad_size, action_history.shape[2], 
+                                    device=action_history.device)
+                hist_actions = torch.cat([padding, action_history], dim=1)
+            
+            action_emb = self.encode_act(hist_actions)
+            
+            # Get state history for prediction
+            if z_bisim.shape[1] >= self.num_hist:
+                z_bisim_hist = z_bisim[:, -self.num_hist:]
+            else:
+                # Pad with zeros at the beginning if we don't have enough history
+                pad_size = self.num_hist - z_bisim.shape[1]
+                padding = torch.zeros(z_bisim.shape[0], pad_size, z_bisim.shape[2], 
+                                    device=z_bisim.device)
+                z_bisim_hist = torch.cat([padding, z_bisim], dim=1)
+            
+            # Predict next bisim state using ViT
+            z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb)
+            z_bisim_new = z_bisim_pred[:, -inc:, ...]
+            
+            # Concatenate to trajectory
+            z_bisim = torch.cat([z_bisim, z_bisim_new], dim=1)
+            t += inc
+        
+        # Final prediction without action
+        zero_action = torch.zeros_like(action[:, :1, :])
+        action_history = torch.cat([action_history, zero_action], dim=1)
+        final_actions = action_history[:, -self.num_hist:]
+        action_emb = self.encode_act(final_actions)
+        
+        # Get final state history
+        z_bisim_hist = z_bisim[:, -self.num_hist:]
+        z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb)
+        z_bisim_new = z_bisim_pred[:, -1:, ...]
+        z_bisim = torch.cat([z_bisim, z_bisim_new], dim=1)
+        
+        # NOTE: this doesn't affect the training, we can worry about this later 
+        # For compatibility, we need to return z_obses in DINOv2 space
+        # We'll keep the initial encoding and pad with zeros or decode from bisim
+        # For now, return a dummy z_obses with correct shape
+        b = obs_0['visual'].shape[0]
+        t_total = z_bisim.shape[1]
+        device = z_bisim.device
+        dummy_z_obses = {
+            "visual": torch.zeros(b, t_total, z_obses_init["visual"].shape[2], z_obses_init["visual"].shape[3], device=device),
+            "proprio": torch.zeros(b, t_total, z_obses_init["proprio"].shape[2], device=device)
+        }
+        # Copy initial observations
+        dummy_z_obses["visual"][:, :num_obs_init] = z_obses_init["visual"]
+        dummy_z_obses["proprio"][:, :num_obs_init] = z_obses_init["proprio"]
+        
+        return dummy_z_obses, z_dino, z_bisim
     
     def rollout_bisim(self, obs_0, act):
         """
