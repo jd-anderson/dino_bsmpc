@@ -495,12 +495,12 @@ class VWorldModel(nn.Module):
                 if hasattr(self.bisim_model, "module"):
                     bisim_loss = self.bisim_model.module.calc_bisim_loss(
                         z_bisim_combined, z_bisim2, reward_combined, reward2,
-                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss
+                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                     )
                 else:
                     bisim_loss = self.bisim_model.calc_bisim_loss(
                         z_bisim_combined, z_bisim2, reward_combined, reward2,
-                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss
+                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                     )
 
                 # take only the loss corresponding to current batch samples
@@ -518,12 +518,12 @@ class VWorldModel(nn.Module):
                 if hasattr(self.bisim_model, "module"):
                     bisim_loss = self.bisim_model.module.calc_bisim_loss(
                         z_bisim, z_bisim2, reward, reward2,
-                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                     )
                 else:
                     bisim_loss = self.bisim_model.calc_bisim_loss(
                         z_bisim, z_bisim2, reward, reward2,
-                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                     )
         else:
             # memory buffer disabled or eval mode - use batch_size comparison
@@ -538,12 +538,12 @@ class VWorldModel(nn.Module):
             if hasattr(self.bisim_model, "module"):
                 bisim_loss = self.bisim_model.module.calc_bisim_loss(
                     z_bisim, z_bisim2, reward, reward2,
-                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                 )
             else:
                 bisim_loss = self.bisim_model.calc_bisim_loss(
                     z_bisim, z_bisim2, reward, reward2,
-                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss
+                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
                 )
 
         # update memory buffer with current batch
@@ -582,6 +582,9 @@ class VWorldModel(nn.Module):
             action_emb = self.encode_act(act[:, : self.num_hist])
             next_z_bisim_src = self.predict_bisim(z_bisim_src, action_emb)
 
+            # Standard loss in bisimulation space (L2 between predicted and GT next states)
+            standard_l2_loss = self.emb_criterion(next_z_bisim_src, z_bisim_tgt)
+
             # Calculate bisimulation loss
             bisim_loss = self.calc_bisim_loss(
                 z_bisim_src,
@@ -590,11 +593,28 @@ class VWorldModel(nn.Module):
             ).mean()
 
             loss_components["bisim_loss"] = bisim_loss
-            loss = loss + self.bisim_coef * bisim_loss
+            loss_components["standard_l2_loss"] = standard_l2_loss
+            loss = loss + standard_l2_loss + self.bisim_coef * bisim_loss
 
-        # No dynamics training in DinoV2 space - all dynamics learning happens in bisimulation space
         visual_pred = None
         z_pred = None
+        if self.predictor is not None:
+            z_pred = self.predict(z_src)
+
+            if self.concat_dim == 0:
+                z_proprio_loss = self.emb_criterion(
+                    z_pred[:, :, -2, :], z_tgt[:, :, -2, :].detach()
+                )
+            elif self.concat_dim == 1:
+                z_proprio_loss = self.emb_criterion(
+                    z_pred[:, :, :, -(self.proprio_dim + self.action_dim): -self.action_dim],
+                    z_tgt[:, :, :, -(self.proprio_dim + self.action_dim): -self.action_dim].detach(),
+                )
+            else:
+                z_proprio_loss = 0
+
+            loss = loss + z_proprio_loss
+            loss_components["z_proprio_loss"] = z_proprio_loss
 
         if self.decoder is not None:
             obs_reconstructed, diff_reconstructed = self.decode(
