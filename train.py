@@ -845,11 +845,15 @@ class Trainer:
         log.info(f"Epoch {self.epoch}  Training loss: {epoch_log['train_loss']:.4f}  \
                 Validation loss: {epoch_log['val_loss']:.4f}")
         log.info(f"Train:  Bisim_loss: {epoch_log['train_bisim_loss']:.4f}  \
+                Standard_L2_Loss: {epoch_log['train_standard_l2_loss']:.4f}  z_proprio_loss: {epoch_log['train_z_proprio_loss']:.4f} \
                 Bisim z_dist: {epoch_log['train_bisim_z_dist']:.4f}  Bisim r_dist: {epoch_log['train_bisim_r_dist']:.4f}  \
-                Variance loss: {epoch_log['train_bisim_var_loss']:.4f}  Transition_dist (Covariance): {epoch_log['train_bisim_transition_dist']:.4f}")
+                Variance loss: {epoch_log['train_bisim_var_loss']:.4f}  Transition_dist (Covariance): {epoch_log['train_bisim_transition_dist']:.4f} \
+                Covariance loss: {epoch_log['train_bisim_cov_reg']:.4f}")
         log.info(f"Validation:  Bisim_loss: {epoch_log['val_bisim_loss']:.4f}  \
+                Standard_L2_Loss: {epoch_log['val_standard_l2_loss']:.4f}  z_proprio_loss: {epoch_log['val_z_proprio_loss']:.4f} \
                 Bisim z_dist: {epoch_log['val_bisim_z_dist']:.4f}  Bisim r_dist: {epoch_log['val_bisim_r_dist']:.4f}  \
-                Variance loss: {epoch_log['val_bisim_var_loss']:.4f}  Transition_dist (Covariance): {epoch_log['val_bisim_transition_dist']:.4f}")
+                Variance loss: {epoch_log['val_bisim_var_loss']:.4f}  Transition_dist (Covariance): {epoch_log['val_bisim_transition_dist']:.4f} \
+                Covariance loss: {epoch_log['val_bisim_cov_reg']:.4f}")
         
         append_loss_to_csv(epoch_log, "training_loss_log.csv")
 

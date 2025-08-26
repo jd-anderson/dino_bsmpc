@@ -25,8 +25,9 @@ def main():
     # Training metrics
     train_metrics = [
         "train_loss",
+        "train_z_proprio_loss", "train_standard_l2_loss",
         "train_bisim_loss", "train_bisim_z_dist", "train_bisim_r_dist",
-        "train_bisim_var_loss", "train_bisim_transition_dist"
+        "train_bisim_var_loss", "train_bisim_transition_dist", "train_bisim_cov_reg"
     ]
 
     plt.figure(figsize=(12,7))
@@ -47,8 +48,9 @@ def main():
     # Validation metrics
     val_metrics = [
         "val_loss",
+        "val_z_proprio_loss", "val_standard_l2_loss"
         "val_bisim_loss", "val_bisim_z_dist", "val_bisim_r_dist",
-        "val_bisim_var_loss", "val_bisim_transition_dist"
+        "val_bisim_var_loss", "val_bisim_transition_dist", "val_bisim_cov_reg"
     ]
 
     plt.figure(figsize=(12,7))
