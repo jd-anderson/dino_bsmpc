@@ -173,6 +173,12 @@ class Trainer:
             if self.train_predictor and self.cfg.has_predictor
             else []
         )
+        # Save bisim_predictor if present (part of the visual world model)
+        self._keys_to_save += (
+            ["bisim_predictor"]
+            if self.train_predictor and self.cfg.get('has_bisim', False)
+            else []
+        )
         self._keys_to_save += (
             ["decoder", "decoder_optimizer"] if self.train_decoder else []
         )
@@ -348,6 +354,7 @@ class Trainer:
             proprio_dim=proprio_emb_dim,
             action_dim=action_emb_dim,
             concat_dim=self.cfg.concat_dim,
+            var_loss_coef=self.cfg.get('var_loss_coef', 1.0),
             bisim_latent_dim=self.cfg.get('bisim_latent_dim', 64),
             bisim_hidden_dim=self.cfg.get('bisim_hidden_dim', 256),
             num_action_repeat=self.cfg.num_action_repeat,
@@ -360,6 +367,13 @@ class Trainer:
             bisim_memory_buffer_size=self.cfg.get('bisim_memory_buffer_size', 0),
             bisim_comparison_size=self.cfg.get('bisim_comparison_size', 20),
         )
+
+        # Prepare / register bisim predictor for training, saving
+        if hasattr(self.model, 'bisim_predictor') and self.model.bisim_predictor is not None:
+            # move under accelerator
+            self.model.bisim_predictor = self.accelerator.prepare(self.model.bisim_predictor)
+            # expose for checkpointing
+            self.bisim_predictor = self.model.bisim_predictor
 
     def init_optimizers(self):
         self.encoder_optimizer = torch.optim.Adam(
@@ -376,8 +390,13 @@ class Trainer:
             self.bisim_optimizer = self.accelerator.prepare(self.bisim_optimizer)
 
         if self.cfg.has_predictor:
+            # Include both regular predictor and bisim predictor if they exist
+            predictor_params = list(self.predictor.parameters())
+            if hasattr(self.model, 'bisim_predictor') and self.model.bisim_predictor is not None:
+                predictor_params.extend(list(self.model.bisim_predictor.parameters()))
+            
             self.predictor_optimizer = torch.optim.AdamW(
-                self.predictor.parameters(),
+                predictor_params,
                 lr=self.cfg.training.predictor_lr,
             )
             self.predictor_optimizer = self.accelerator.prepare(
@@ -542,7 +561,7 @@ class Trainer:
             }
             if self.cfg.has_decoder and plot:
                 # only eval images when plotting due to speed
-                if self.cfg.has_predictor:
+                if self.cfg.has_predictor and z_out is not None:
                     z_obs_out, z_act_out = self.model.separate_emb(z_out)
                     z_gt = self.model.encode_obs(obs)
                     z_tgt = slice_trajdict_with_t(z_gt, start_idx=self.model.num_pred)
@@ -638,7 +657,7 @@ class Trainer:
 
             if self.cfg.has_decoder and plot:
                 # only eval images when plotting due to speed
-                if self.cfg.has_predictor:
+                if self.cfg.has_predictor and z_out is not None:
                     z_obs_out, z_act_out = self.model.separate_emb(z_out)
                     z_gt = self.model.encode_obs(obs)
                     z_tgt = slice_trajdict_with_t(z_gt, start_idx=self.model.num_pred)

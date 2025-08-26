@@ -31,7 +31,6 @@ class BisimModel(nn.Module):
         # Encoder from DinoV2 embeddings to bisimulation space
         self.encoder = build_mlp(input_dim, hidden_dim, latent_dim, num_hidden_layers)
         
-        
         # Reward predictor
         self.reward = build_mlp(
             latent_dim + action_dim,  # latent state + action embedding
@@ -135,18 +134,6 @@ class BisimModel(nn.Module):
         
         return z_bisim
     
-    def next(self, z_bisim, action_emb):
-        """
-        Predicts next bisimulation state
-        input: z_bisim: (b, bisim_dim)
-               action_emb: (b, action_emb_dim)
-        output: next_z_bisim: (b, bisim_dim)
-        """
-        # print(f"BISIM NEXT: Bisim state shape={z_bisim.shape}, dim={z_bisim.shape[-1]}, action shape={action_emb.shape}")
-        x = torch.cat([z_bisim, action_emb], dim=-1)
-        result = self.dynamics(x)
-        # print(f"BISIM NEXT: Output next state shape={result.shape}, dim={result.shape[-1]}")
-        return result
 
     def predict_reward(self, z_bisim, action_emb):
         """
@@ -158,85 +145,179 @@ class BisimModel(nn.Module):
         # print(f"DEBUG - BisimModel.predict_reward input dimensions: z_bisim {z_bisim.shape}, action_emb {action_emb.shape}")
         x = torch.cat([z_bisim, action_emb], dim=-1)
         # print(f"DEBUG - BisimModel.predict_reward concatenated input: {x.shape}")
-        reward = self.reward(x)
+        return self.reward(x)
+
+    def compute_transition_distance(self, next_z_bisim, next_z_bisim2):
+        """
+        Compute distance between next state distributions for bisimulation metric.
+        Uses L2 distance between predicted next states averaged over time.
+
+        Args:
+            next_z_bisim: (batch_size, time_steps, bisim_dim) tensor
+            next_z_bisim2: (batch_size, time_steps, bisim_dim) tensor
+
+        Returns:
+            distance: (batch_size,) tensor of transition distances
+        """
+        # Compute L2 distance between next state predictions
+        # Average over time dimension to get distance per batch element
+        diff = next_z_bisim - next_z_bisim2  # (batch_size, time_steps, bisim_dim)
+        squared_diff = diff.pow(2).sum(dim=-1)  # (batch_size, time_steps)
+        distances = squared_diff.mean(dim=-1)  # (batch_size,) - average over time
         
-        # Log reward prediction
-        self.log_bisim({
-            "event": "bisim_predict_reward",
-            "z_bisim_shape": list(z_bisim.shape),
-            "action_emb_shape": list(action_emb.shape),
-            "concatenated_shape": list(x.shape),
-            "reward_shape": list(reward.shape),
-            "reward_stats": {
-                "mean": float(reward.mean().item()),
-                "std": float(reward.std().item()),
-                "min": float(reward.min().item()),
-                "max": float(reward.max().item()),
-            },
-        })
+        # Take square root to get L2 distance
+        distances = torch.sqrt(distances + 1e-8)  # Add epsilon for numerical stability
         
-        return reward
-    
-    def calc_bisim_loss(self, z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount=0.99, train_w_reward_loss=True):
+        return distances
+
+    def compute_covariance_regularization(self, z_bisim, next_z_bisim):
+        """
+        Compute covariance regularization for bisimulation embeddings.
+        Encourages diverse and structured representations.
+        
+        Args:
+            z_bisim: (batch_size, time_steps, bisim_dim) current states
+            next_z_bisim: (batch_size, time_steps, bisim_dim) next states
+            
+        Returns:
+            cov_reg: (batch_size,) tensor of covariance regularization loss
+        """
+        batch_size, time_steps, bisim_dim = z_bisim.shape
+        
+        # Combine current and next states for covariance computation
+        combined_states = torch.cat([z_bisim, next_z_bisim], dim=0)  # (2*batch_size, time_steps, bisim_dim)
+        
+        # Reshape to treat each time step as a separate sample
+        # (2*batch_size * time_steps, bisim_dim)
+        states_flat = combined_states.reshape(-1, bisim_dim)
+        
+        # Center the data
+        states_centered = states_flat - states_flat.mean(dim=0, keepdim=True)
+        
+        # Compute covariance matrix: (bisim_dim, bisim_dim)
+        n_samples = states_centered.shape[0]
+        cov_matrix = torch.mm(states_centered.t(), states_centered) / (n_samples - 1)
+        
+        # Add small epsilon for numerical stability
+        epsilon = 1e-6
+        cov_matrix = cov_matrix + epsilon * torch.eye(bisim_dim, device=cov_matrix.device)
+        
+        # Compute covariance regularization loss
+        # Encourage off-diagonal elements to be small (decorrelation)
+        off_diag_mask = ~torch.eye(bisim_dim, dtype=torch.bool, device=cov_matrix.device)
+        off_diag_loss = cov_matrix[off_diag_mask].pow(2).mean()
+        
+        # Encourage diagonal elements to be close to target variance
+        diag_elements = torch.diag(cov_matrix)
+        var_target = 1.0
+        diag_loss = (diag_elements - var_target).pow(2).mean()
+        
+        # Total covariance regularization
+        cov_reg = off_diag_loss + diag_loss
+        
+        # Return per-batch element (broadcast to match batch size)
+        return cov_reg.expand(batch_size)
+
+    def var_loss(self, z_bisim, var_target=0.5, epsilon=0):
+        """
+        Calculate variance loss (core)
+        input: z_bisim: (b, t, bisim_dim)
+        var_target: variance parameter
+        epsilon: variance parameter
+        output: var_loss: (t)
+        """
+
+        # Compute variance
+        var = z_bisim.var(dim=0)  # (T,D)
+
+        # Compute sqrt(var + epsilon)
+        std = torch.sqrt(var + epsilon)
+
+        # If NaN appears, fallback to using var directly
+        nan_mask = torch.isnan(std)
+        if nan_mask.any():
+            # Replace NaN entries with var values
+            std = var
+            print(f"WARNING: NaN or Inf in Variance computation")
+
+        # Compute max(0, var_target - std)
+        loss = torch.relu(var_target - std)
+
+        return loss.mean(dim=1)  # reduce the dimension to (T)
+
+    def calc_var_loss(self, z_bisim, next_z_bisim, var_target=1, epsilon=0):
+
+        """
+        Calculate variance loss with memory buffer
+        input: z_bisim: (b, t, bisim_dim)
+        next_z_bisim: (b, t, bisim_dim)
+        var_target: variance parameter
+        epsilon: variance parameter
+        output: var_loss: (t)
+        """
+
+        T_Plus_1_z_bisim = torch.cat([z_bisim, next_z_bisim], dim=0)
+
+        # calculate the loss
+        loss = self.var_loss(T_Plus_1_z_bisim, var_target, epsilon)
+
+        return loss  # dimension=(T+1), or memory sample+1
+
+    def calc_bisim_loss(self, z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount=0.99,
+                        train_w_reward_loss=True):
         """
         Calculate bisimulation loss
-        bisimulation metric: d(s1,s2) = |r(s1) - r(s2)| + γ · d(P(s1), P(s2))
+        bisimulation metric: d(s1,s2) = |r(s1) - r(s2)| + γ · d(P(s1), P(s2)) + Variance Loss + Covariance Regularization
+        input: z_bisim, z_bisim2: (b, t, bisim_dim) or (b, bisim_dim)
+               reward, reward2: (b, t, 1) or (b, 1)
+               next_z_bisim, next_z_bisim2: (b, t, bisim_dim) or (b, bisim_dim)
+        output: bisim_loss: (b, t) or (b,)
         """
         # print(f"BISIM LOSS CALC: State dim={z_bisim.shape[-1]}, calculating bisimilarity metric")
         # print(f"BISIM LOSS CALC: z_bisim={z_bisim.shape}, next_z_bisim={next_z_bisim.shape}")
-        
+
         # Compute distance between current states
         z_dist = torch.sum(F.smooth_l1_loss(z_bisim, z_bisim2, reduction="none"), dim=-1)
-        
+
         # Compute distance between rewards
         r_dist = torch.sum(F.smooth_l1_loss(reward, reward2, reduction="none"), dim=-1)
+
+        # Compute transition distance between next states
+        transition_dist = self.compute_transition_distance(next_z_bisim, next_z_bisim2)
+
+        # Check for NaN or Inf in transition_dist
+        if torch.isnan(transition_dist).any() or torch.isinf(transition_dist).any():
+            print("WARNING: NaN or Inf values detected in transition_dist!")
+            print(f"transition_dist shape: {transition_dist.shape}")
+            print(
+                f"transition_dist stats: mean={transition_dist.mean().item():.6f}, std={transition_dist.std().item():.6f}, min={transition_dist.min().item():.6f}, max={transition_dist.max().item():.6f}")
+            # Replace with safe values
+            transition_dist = torch.ones_like(transition_dist)
+
+        # Expand transition_dist to match time dimension of r_dist
+        # transition_dist: (b,) -> (b, t) by repeating for each time step
+        transition_dist = transition_dist.unsqueeze(1).expand(-1, r_dist.shape[1])  # (b, t)
+
+        # Compute variance loss
+        var_loss = self.calc_var_loss(z_bisim, next_z_bisim, var_target=1, epsilon=0)
         
-        # Compute distance between next states
-        transition_dist = torch.norm(next_z_bisim - next_z_bisim2, dim=-1)
-        
+        # Compute covariance regularization
+        cov_reg = self.compute_covariance_regularization(z_bisim, next_z_bisim)
+        # Expand to match time dimension
+        cov_reg = cov_reg.unsqueeze(1).expand(-1, r_dist.shape[1])  # (b, t)
+
         # Target bisimilarity
         # if want reward_loss
         if train_w_reward_loss:
             target_bisimilarity = r_dist + discount * transition_dist
         else:
-            target_bisimilarity = 0*r_dist + discount * transition_dist
-        
-        # Bisimulation loss
+            target_bisimilarity = 0 * r_dist + discount * transition_dist
+
         bisim_loss = (z_dist - target_bisimilarity).pow(2)
-        
-        # Log bisimulation loss computation
-        self.log_bisim({
-            "event": "bisim_calc_loss",
-            "z_bisim_shape": list(z_bisim.shape),
-            "z_bisim2_shape": list(z_bisim2.shape),
-            "reward_shape": list(reward.shape),
-            "reward2_shape": list(reward2.shape),
-            "next_z_bisim_shape": list(next_z_bisim.shape),
-            "next_z_bisim2_shape": list(next_z_bisim2.shape),
-            "z_dist_stats": {
-                "mean": float(z_dist.mean().item()),
-                "std": float(z_dist.std().item()),
-            },
-            "r_dist_stats": {
-                "mean": float(r_dist.mean().item()),
-                "std": float(r_dist.std().item()),
-            },
-            "transition_dist_stats": {
-                "mean": float(transition_dist.mean().item()),
-                "std": float(transition_dist.std().item()),
-            },
-            "target_bisimilarity_stats": {
-                "mean": float(target_bisimilarity.mean().item()),
-                "std": float(target_bisimilarity.std().item()),
-            },
-            "bisim_loss_stats": {
-                "mean": float(bisim_loss.mean().item()),
-                "std": float(bisim_loss.std().item()),
-            },
-            "discount": discount,
-            "train_w_reward_loss": train_w_reward_loss,
-        })
-        
+
+        # Bisimulation loss with variance and covariance regularization
+        bisim_loss = bisim_loss + var_loss + cov_reg
+
         # print(f"BISIM LOSS CALC: Final bisim loss shape={bisim_loss.shape}")
-        
-        return bisim_loss 
+
+        return bisim_loss
