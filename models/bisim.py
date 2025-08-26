@@ -264,7 +264,7 @@ class BisimModel(nn.Module):
         return loss  # dimension=(T+1), or memory sample+1
 
     def calc_bisim_loss(self, z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount=0.99,
-                        train_w_reward_loss=True):
+                        train_w_reward_loss=True, var_loss_coef: float = 1.0):
         """
         Calculate bisimulation loss
         bisimulation metric: d(s1,s2) = |r(s1) - r(s2)| + γ · d(P(s1), P(s2)) + Variance Loss + Covariance Regularization
@@ -305,6 +305,9 @@ class BisimModel(nn.Module):
         cov_reg = self.compute_covariance_regularization(z_bisim, next_z_bisim)
         # Expand to match time dimension
         cov_reg = cov_reg.unsqueeze(1).expand(-1, r_dist.shape[1])  # (b, t)
+
+        var_loss = var_loss * var_loss_coef
+        cov_reg = cov_reg * var_loss_coef
 
         # Target bisimilarity
         # if want reward_loss
