@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import json
+import numpy as np
 
 
 def build_mlp(input_dim, hidden_dim, output_dim, num_hidden_layers):
@@ -47,6 +49,57 @@ class BisimModel(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
     
+    def log_bisim(self, data):
+        """Log bisimulation model details"""
+        # Convert data to JSON-serializable format
+        serializable_data = {}
+        for key, value in data.items():
+            if isinstance(value, np.integer):
+                serializable_data[key] = int(value)
+            elif isinstance(value, np.floating):
+                serializable_data[key] = float(value)
+            elif isinstance(value, np.ndarray):
+                serializable_data[key] = value.tolist()
+            elif isinstance(value, torch.Tensor):
+                serializable_data[key] = value.detach().cpu().numpy().tolist()
+            elif isinstance(value, (list, tuple)):
+                # Handle lists/tuples that might contain numpy types
+                serializable_data[key] = []
+                for item in value:
+                    if isinstance(item, np.integer):
+                        serializable_data[key].append(int(item))
+                    elif isinstance(item, np.floating):
+                        serializable_data[key].append(float(item))
+                    elif isinstance(item, np.ndarray):
+                        serializable_data[key].append(item.tolist())
+                    elif isinstance(item, torch.Tensor):
+                        serializable_data[key].append(item.detach().cpu().numpy().tolist())
+                    else:
+                        serializable_data[key].append(item)
+            elif isinstance(value, dict):
+                # Handle nested dictionaries
+                serializable_data[key] = {}
+                for k, v in value.items():
+                    if isinstance(v, np.integer):
+                        serializable_data[key][k] = int(v)
+                    elif isinstance(v, np.floating):
+                        serializable_data[key][k] = float(v)
+                    elif isinstance(v, np.ndarray):
+                        serializable_data[key][k] = v.tolist()
+                    elif isinstance(v, torch.Tensor):
+                        serializable_data[key][k] = v.detach().cpu().numpy().tolist()
+                    else:
+                        serializable_data[key][k] = v
+            else:
+                serializable_data[key] = value
+        
+        log_entry = {
+            "timestamp": np.datetime64('now').astype(str),
+            **serializable_data
+        }
+        with open("bisim_log.json", "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+    
     def encode(self, z_dino):
         """
         Maps DinoV2 embeddings to bisimulation embeddings
@@ -58,8 +111,30 @@ class BisimModel(nn.Module):
         z_dino = z_dino.reshape(b * t, p * d)
         z_bisim = self.encoder(z_dino)
         z_bisim = z_bisim.reshape(b, t, self.latent_dim)
+        
+        # Log encoding details
+        self.log_bisim({
+            "event": "bisim_encode",
+            "input_shape": list(z_dino.shape),
+            "input_reshaped_shape": list(z_dino.shape),
+            "output_shape": list(z_bisim.shape),
+            "input_stats": {
+                "mean": float(z_dino.mean().item()),
+                "std": float(z_dino.std().item()),
+                "min": float(z_dino.min().item()),
+                "max": float(z_dino.max().item()),
+            },
+            "output_stats": {
+                "mean": float(z_bisim.mean().item()),
+                "std": float(z_bisim.std().item()),
+                "min": float(z_bisim.min().item()),
+                "max": float(z_bisim.max().item()),
+            },
+        })
+        
         return z_bisim
     
+
     def predict_reward(self, z_bisim, action_emb):
         """
         Predicts reward from bisimulation state and action

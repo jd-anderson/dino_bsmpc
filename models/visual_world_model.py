@@ -638,6 +638,67 @@ class VWorldModel(nn.Module):
                 visuals: (b, t+n+1, 3, img_size, img_size)
                 z: (b, t+n+1, num_patches, emb_dim)
         """
+        # Log rollout start
+        import json
+
+        def log_rollout(data):
+            """Log rollout details"""
+            # Convert data to JSON-serializable format
+            serializable_data = {}
+            for key, value in data.items():
+                if isinstance(value, np.integer):
+                    serializable_data[key] = int(value)
+                elif isinstance(value, np.floating):
+                    serializable_data[key] = float(value)
+                elif isinstance(value, np.ndarray):
+                    serializable_data[key] = value.tolist()
+                elif isinstance(value, torch.Tensor):
+                    serializable_data[key] = value.detach().cpu().numpy().tolist()
+                elif isinstance(value, (list, tuple)):
+                    # Handle lists/tuples that might contain numpy types
+                    serializable_data[key] = []
+                    for item in value:
+                        if isinstance(item, np.integer):
+                            serializable_data[key].append(int(item))
+                        elif isinstance(item, np.floating):
+                            serializable_data[key].append(float(item))
+                        elif isinstance(item, np.ndarray):
+                            serializable_data[key].append(item.tolist())
+                        elif isinstance(item, torch.Tensor):
+                            serializable_data[key].append(item.detach().cpu().numpy().tolist())
+                        else:
+                            serializable_data[key].append(item)
+                elif isinstance(value, dict):
+                    # Handle nested dictionaries
+                    serializable_data[key] = {}
+                    for k, v in value.items():
+                        if isinstance(v, np.integer):
+                            serializable_data[key][k] = int(v)
+                        elif isinstance(v, np.floating):
+                            serializable_data[key][k] = float(v)
+                        elif isinstance(v, np.ndarray):
+                            serializable_data[key][k] = v.tolist()
+                        elif isinstance(v, torch.Tensor):
+                            serializable_data[key][k] = v.detach().cpu().numpy().tolist()
+                        else:
+                            serializable_data[key][k] = v
+                else:
+                    serializable_data[key] = value
+            
+            log_entry = {
+                "timestamp": np.datetime64('now').astype(str),
+                **serializable_data
+            }
+            with open("rollout_log.json", "a") as f:
+                f.write(json.dumps(log_entry) + "\n")
+        
+        log_rollout({
+            "event": "rollout_start",
+            "obs_0_shapes": {k: list(v.shape) for k, v in obs_0.items()},
+            "act_shape": list(act.shape),
+            "has_bisim": self.has_bisim,
+        })
+        
         num_obs_init = obs_0['visual'].shape[1]
         act_0 = act[:, :num_obs_init]
         action = act[:, num_obs_init:]
@@ -650,24 +711,66 @@ class VWorldModel(nn.Module):
         z = self.encode(obs_0, act_0)
         t = 0
         inc = 1
+        
+        log_rollout({
+            "event": "rollout_initial_encoding",
+            "num_obs_init": num_obs_init,
+            "act_0_shape": list(act_0.shape),
+            "action_shape": list(action.shape),
+            "z_shape": list(z.shape),
+        })
+        
         while t < action.shape[1]:
             z_pred = self.predict(z[:, -self.num_hist:])
             z_new = z_pred[:, -inc:, ...]
             z_new = self.replace_actions_from_z(z_new, action[:, t: t + inc, :])
             z = torch.cat([z, z_new], dim=1)
             t += inc
+            
+            log_rollout({
+                "event": "rollout_step",
+                "step": t,
+                "z_pred_shape": list(z_pred.shape),
+                "z_new_shape": list(z_new.shape),
+                "z_updated_shape": list(z.shape),
+            })
 
         z_pred = self.predict(z[:, -self.num_hist:])
         z_new = z_pred[:, -1:, ...]  # take only the next pred
         z = torch.cat([z, z_new], dim=1)
         z_obses, z_acts = self.separate_emb(z)
 
+        log_rollout({
+            "event": "rollout_final_prediction",
+            "z_pred_final_shape": list(z_pred.shape),
+            "z_new_final_shape": list(z_new.shape),
+            "z_final_shape": list(z.shape),
+            "z_obses_shapes": {k: list(v.shape) for k, v in z_obses.items()},
+            "z_acts_shape": list(z_acts.shape),
+        })
+
         # If using bisimulation, also return bisimulation embeddings
         if self.has_bisim:
             z_bisim = self.encode_bisim(z_obses)
+            
+            log_rollout({
+                "event": "rollout_bisimulation_encoding",
+                "z_bisim_shape": list(z_bisim.shape),
+                "z_bisim_stats": {
+                    "mean": float(z_bisim.mean().item()),
+                    "std": float(z_bisim.std().item()),
+                    "min": float(z_bisim.min().item()),
+                    "max": float(z_bisim.max().item()),
+                },
+            })
+            
             # print(f"ROLLOUT COMPLETE: Returning with bisimulation embeddings of shape {z_bisim.shape}, dim={z_bisim.shape[-1]}")
             return z_obses, z, z_bisim
 
+        log_rollout({
+            "event": "rollout_complete_no_bisim",
+        })
+        
         # print("ROLLOUT COMPLETE: Returning without bisimulation embeddings")
         return z_obses, z
     
