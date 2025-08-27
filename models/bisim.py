@@ -272,9 +272,15 @@ class BisimModel(nn.Module):
                reward, reward2: (b, t, 1) or (b, 1)
                next_z_bisim, next_z_bisim2: (b, t, bisim_dim) or (b, bisim_dim)
         output: bisim_loss: (b, t) or (b,)
+        bisimulation metric: d(s1,s2) = |r(s1) - r(s2)| + γ · d(P(s1), P(s2)) + Variance Loss + Covariance Regularization
+        input: z_bisim, z_bisim2: (b, t, bisim_dim) or (b, bisim_dim)
+               reward, reward2: (b, t, 1) or (b, 1)
+               next_z_bisim, next_z_bisim2: (b, t, bisim_dim) or (b, bisim_dim)
+        output: bisim_loss: (b, t) or (b,)
         """
         # print(f"BISIM LOSS CALC: State dim={z_bisim.shape[-1]}, calculating bisimilarity metric")
         # print(f"BISIM LOSS CALC: z_bisim={z_bisim.shape}, next_z_bisim={next_z_bisim.shape}")
+
 
         # Compute distance between current states
         z_dist = torch.sum(F.smooth_l1_loss(z_bisim, z_bisim2, reduction="none"), dim=-1)
@@ -323,4 +329,4 @@ class BisimModel(nn.Module):
 
         # print(f"BISIM LOSS CALC: Final bisim loss shape={bisim_loss.shape}")
 
-        return bisim_loss
+        return bisim_loss, z_dist, r_dist, discount * transition_dist, var_loss, cov_reg
