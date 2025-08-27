@@ -8,8 +8,8 @@ def append_loss_to_csv(epoch_log, csv_path="training_log.csv"):
         "train_loss", "val_loss",
         "train_z_proprio_loss", "train_standard_l2_loss",
         "train_bisim_loss", "train_bisim_z_dist", "train_bisim_r_dist",
-        "train_bisim_var_loss", "train_bisim_transition_dist", "train_bisim_cov_reg"
-        "val_z_proprio_loss", "val_standard_l2_loss"
+        "train_bisim_var_loss", "train_bisim_transition_dist", "train_bisim_cov_reg",
+        "val_z_proprio_loss", "val_standard_l2_loss",
         "val_bisim_loss", "val_bisim_z_dist", "val_bisim_r_dist",
         "val_bisim_var_loss", "val_bisim_transition_dist", "val_bisim_cov_reg"
     ]
