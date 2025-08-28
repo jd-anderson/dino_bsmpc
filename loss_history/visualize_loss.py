@@ -48,7 +48,7 @@ def main():
     # Validation metrics
     val_metrics = [
         "val_loss",
-        "val_z_proprio_loss", "val_standard_l2_loss"
+        "val_z_proprio_loss", "val_standard_l2_loss",
         "val_bisim_loss", "val_bisim_z_dist", "val_bisim_r_dist",
         "val_bisim_var_loss", "val_bisim_transition_dist", "val_bisim_cov_reg"
     ]
