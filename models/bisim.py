@@ -218,7 +218,7 @@ class BisimModel(nn.Module):
         # Return per-batch element (broadcast to match batch size)
         return cov_reg.expand(batch_size)
 
-    def var_loss(self, z_bisim, var_target=0.5, epsilon=0):
+    def var_loss(self, z_bisim, var_target=0.1, epsilon=0):
         """
         Calculate variance loss (core)
         input: z_bisim: (b, t, bisim_dim)
@@ -245,7 +245,53 @@ class BisimModel(nn.Module):
 
         return loss.mean(dim=1)  # reduce the dimension to (T)
 
-    def calc_var_loss(self, z_bisim, next_z_bisim, var_target=1, epsilon=0):
+    def pca_var_loss(self, z_bisim, target_first=0.01, target_rest=2.0, num_pcs=10):
+        """
+        PCA variance loss:
+        - 1st PC variance -> target_first
+        - Next (num_pcs-1) PCs variance -> target_rest
+        - Remaining PCs are unconstrained
+
+        Args:
+            z_bisim: Tensor (B, T, D)
+            target_first: variance target for the first PC
+            target_rest: variance target for PCs 2..num_pcs
+            num_pcs: number of PCs to regularize
+        Returns:
+            scalar loss
+        """
+        B, T, D = z_bisim.shape
+        Z = z_bisim.reshape(B * T, D)
+
+        # Center data
+        Z_centered = Z - Z.mean(dim=0, keepdim=True)
+
+        # PCA via SVD
+        U, S, Vt = torch.linalg.svd(Z_centered, full_matrices=False)
+        V = Vt.T  # (D, D)
+        num_pcs = min(num_pcs, V.shape[1])
+        V_10 = V[:, :num_pcs]  # (D, num_pcs)
+
+        # Project to PCA coords
+        Z_proj = Z_centered @ V_10  # (num_pcs)
+        var_V10 = torch.zeros(num_pcs, device=Z_proj.device)
+
+        # print(Z_proj)
+        for i in range(num_pcs):
+            var_V10[i] = Z_proj[:, i].var(unbiased=True)
+
+
+        # Build targets
+        targets = torch.full_like(var_V10, target_rest)
+        if num_pcs > 0:
+            targets[0] = target_first
+
+        # Loss = mean squared error between pc_var and targets
+        loss = (torch.abs(var_V10 - targets)).mean()
+
+        return loss
+
+    def calc_var_loss(self, z_bisim, next_z_bisim, target_first= 0.01, var_target=0.1, num_pcs=10, epsilon=0):
 
         """
         Calculate variance loss with memory buffer
@@ -259,12 +305,14 @@ class BisimModel(nn.Module):
         T_Plus_1_z_bisim = torch.cat([z_bisim, next_z_bisim], dim=0)
 
         # calculate the loss
-        loss = self.var_loss(T_Plus_1_z_bisim, var_target, epsilon)
+        # loss = self.var_loss(T_Plus_1_z_bisim, var_target, epsilon)
+        loss = self.pca_var_loss(T_Plus_1_z_bisim, target_first, var_target, num_pcs)
 
         return loss  # dimension=(T+1), or memory sample+1
 
     def calc_bisim_loss(self, z_bisim, z_bisim2, reward, reward2, next_z_bisim, next_z_bisim2, discount=0.99,
-                        train_w_reward_loss=True, var_loss_coef: float = 1.0):
+                        train_w_reward_loss=True, var_loss_coef: float = 1.0, PCA1_loss_target: float = 0.01, VC_target: float = 1.0,
+                        num_pcs: int = 10):
         """
         Calculate bisimulation loss
         bisimulation metric: d(s1,s2) = |r(s1) - r(s2)| + γ · d(P(s1), P(s2)) + Variance Loss + Covariance Regularization
@@ -305,7 +353,7 @@ class BisimModel(nn.Module):
         transition_dist = transition_dist.unsqueeze(1).expand(-1, r_dist.shape[1])  # (b, t)
 
         # Compute variance loss
-        var_loss = self.calc_var_loss(z_bisim, next_z_bisim, var_target=1, epsilon=0)
+        var_loss = self.calc_var_loss(z_bisim, next_z_bisim, PCA1_loss_target, VC_target, num_pcs, epsilon=0.1)
         
         # Compute covariance regularization
         cov_reg = self.compute_covariance_regularization(z_bisim, next_z_bisim)
