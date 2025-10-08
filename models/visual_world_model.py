@@ -21,6 +21,10 @@ class VWorldModel(nn.Module):
             bisim_hidden_dim=256,  # New parameter for bisimulation hidden dimension
             bisim_coef=1.0,  # New parameter for bisimulation loss coefficient
             var_loss_coef: float = 1.0,
+            PCA1_loss_target: float = 0.01, 
+            VC_target: float = 1.0,
+            num_pcs: int = 10,
+            PCAloss_epoch: int=50,
             train_bisim=True,  # New parameter to control training of bisimulation model
             bisim_memory_buffer_size=0,  # Size of memory buffer for cross-batch bisimulation (0 = disabled)
             bisim_comparison_size=20,  # Total number of states to compare in bisimulation learning
@@ -160,6 +164,10 @@ class VWorldModel(nn.Module):
         self.emb_criterion = nn.MSELoss()
         # vc regularization coefficient
         self.var_loss_coef = var_loss_coef
+        self.PCA1_loss_target = PCA1_loss_target
+        self.VC_target = VC_target
+        self.num_pcs = num_pcs
+        self.PCAloss_epoch = PCAloss_epoch
 
     def train(self, mode=True):
         super().train(mode)
@@ -446,7 +454,7 @@ class VWorldModel(nn.Module):
         }
 
     # mod 1 function on BSMPC
-    def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, reward=None, discount=0.99):
+    def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, epoch, reward=None, discount=0.99):
         """
         Calculate bisimulation loss
         input: z_bisim: (b, t, bisim_dim)
@@ -517,12 +525,14 @@ class VWorldModel(nn.Module):
                 if hasattr(self.bisim_model, "module"):
                     bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.module.calc_bisim_loss(
                         z_bisim_combined, z_bisim2, reward_combined, reward2,
-                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
+                        next_z_bisim_combined, next_z_bisim2, epoch, discount, self.train_w_reward_loss, self.var_loss_coef,
+                        self.PCA1_loss_target, self.VC_target, self.num_pcs, self.PCAloss_epoch
                     )
                 else:
                     bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.calc_bisim_loss(
                         z_bisim_combined, z_bisim2, reward_combined, reward2,
-                        next_z_bisim_combined, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
+                        next_z_bisim_combined, next_z_bisim2, epoch, discount, self.train_w_reward_loss, self.var_loss_coef,
+                        self.PCA1_loss_target, self.VC_target, self.num_pcs, self.PCAloss_epoch
                     )
 
                 # take only the loss corresponding to current batch samples
@@ -540,12 +550,14 @@ class VWorldModel(nn.Module):
                 if hasattr(self.bisim_model, "module"):
                     bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.module.calc_bisim_loss(
                         z_bisim, z_bisim2, reward, reward2,
-                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
+                        next_z_bisim, next_z_bisim2, epoch, discount, self.train_w_reward_loss, self.var_loss_coef,
+                        self.PCA1_loss_target, self.VC_target, self.num_pcs, self.PCAloss_epoch
                     )
                 else:
                     bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.calc_bisim_loss(
                         z_bisim, z_bisim2, reward, reward2,
-                        next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
+                        next_z_bisim, next_z_bisim2, epoch, discount, self.train_w_reward_loss, self.var_loss_coef,
+                        self.PCA1_loss_target, self.VC_target, self.num_pcs, self.PCAloss_epoch
                     )
         else:
             # memory buffer disabled or eval mode - use batch_size comparison
@@ -560,12 +572,14 @@ class VWorldModel(nn.Module):
             if hasattr(self.bisim_model, "module"):
                 bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.module.calc_bisim_loss(
                     z_bisim, z_bisim2, reward, reward2,
-                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
+                    next_z_bisim, next_z_bisim2, epoch, discount, self.train_w_reward_loss, self.var_loss_coef,
+                    self.PCA1_loss_target, self.VC_target, self.num_pcs, self.PCAloss_epoch
                 )
             else:
                 bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.bisim_model.calc_bisim_loss(
                     z_bisim, z_bisim2, reward, reward2,
-                    next_z_bisim, next_z_bisim2, discount, self.train_w_reward_loss, self.var_loss_coef
+                    next_z_bisim, next_z_bisim2, epoch, discount, self.train_w_reward_loss, self.var_loss_coef,
+                    self.PCA1_loss_target, self.VC_target, self.num_pcs, self.PCAloss_epoch
                 )
 
         # update memory buffer with current batch
@@ -575,10 +589,11 @@ class VWorldModel(nn.Module):
         # print(f"DEBUG: Final bisim_loss shape: {bisim_loss.shape}")
         return bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg
 
-    def forward(self, obs, act):
+    def forward(self, obs, act, epoch: int=0):
         """
         input:  obs (dict):  "visual", "proprio" (b, num_frames, 3, img_size, img_size)
                 act: (b, num_frames, action_dim)
+                epoch: a number describe the epoch for loss function selection
         output: z_pred: (b, num_hist, num_patches, emb_dim)
                 visual_pred: (b, num_hist, 3, img_size, img_size)
                 visual_reconstructed: (b, num_frames, 3, img_size, img_size)
@@ -611,7 +626,7 @@ class VWorldModel(nn.Module):
             bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg = self.calc_bisim_loss(
                 z_bisim_src,
                 next_z_bisim_src,
-                action_emb
+                action_emb, epoch=epoch
             )
             bisim_loss = bisim_loss.mean()
             loss_components["bisim_loss"] = bisim_loss
