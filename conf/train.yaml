@@ -31,7 +31,7 @@ hydra:
 
 training:
   seed: 0
-  epochs: 50
+  epochs: 80
   batch_size: 20 # should >= nodes * tasks_per_node
   save_every_x_epoch: 1
   reconstruct_every_x_batch: 500
@@ -39,8 +39,8 @@ training:
   encoder_lr: 1e-6
   decoder_lr: 3e-4
   predictor_lr: 5e-4
-  action_encoder_lr: 5e-4
-  bisim_lr: 3e-4  # Learning rate for bisimulation model
+  action_encoder_lr: 1e-5 # decreasing from 5e-4
+  bisim_lr: 5e-6  # Learning rate for bisimulation model # decreasing from 3e-4, --> 1e-5, --> 5e-6
 
 img_size: 224 # should be a multiple of 224
 frameskip: 5
@@ -58,11 +58,15 @@ num_proprio_repeat: 1
 
 # bisimulation model settings
 has_bisim: True  # Enable bisimulation model
-bisim_latent_dim: 512  # Latent dimension for bisimulation model
-bisim_hidden_dim: 1024  # Hidden dimension for bisimulation model
+bisim_latent_dim: 1024  # Latent dimension for bisimulation model
+bisim_hidden_dim: 2048  # Hidden dimension for bisimulation model
 bisim_coef: 1  # Coefficient for bisimulation loss
-var_loss_coef: 2
-bisim_memory_buffer_size: 2000  # Size of memory buffer for cross-batch bisimulation (0 = disabled)
+var_loss_coef: 1 # decreased from 2
+PCA1_loss_target: 0.01
+VC_target: 1
+num_pcs: 10
+PCAloss_epoch: 1
+bisim_memory_buffer_size: 1000  # Size of memory buffer for cross-batch bisimulation (0 = disabled)
 bisim_comparison_size: 200  # Total number of states to compare in bisimulation learning
 
 num_hist: 3
