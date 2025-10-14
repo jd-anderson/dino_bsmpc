@@ -21,15 +21,25 @@ class BisimModel(nn.Module):
         hidden_dim=256,
         num_hidden_layers=2,
         action_dim=10,
+        bypass_dinov2=False,
+        img_size=224,
     ):
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
         self.hidden_dim = hidden_dim
         self.action_dim = action_dim
+        self.bypass_dinov2 = bypass_dinov2
+        self.img_size = img_size
         
-        # Encoder from DinoV2 embeddings to bisimulation space
-        self.encoder = build_mlp(input_dim, hidden_dim, latent_dim, num_hidden_layers)
+        if bypass_dinov2:
+            # Direct encoding: raw observations (3 * img_size * img_size) -> bisim
+            actual_input_dim = 3 * img_size * img_size
+        else:
+            # DinoV2 encoding: DinoV2 embeddings (patches * embed_dim) -> bisim
+            actual_input_dim = input_dim
+            
+        self.encoder = build_mlp(actual_input_dim, hidden_dim, latent_dim, num_hidden_layers)
         
         # Reward predictor
         self.reward = build_mlp(
@@ -100,29 +110,36 @@ class BisimModel(nn.Module):
         with open("bisim_log.json", "a") as f:
             f.write(json.dumps(log_entry) + "\n")
     
-    def encode(self, z_dino):
+    def encode(self, input_data):
         """
-        Maps DinoV2 embeddings to bisimulation embeddings
-        input: z_dino: (b, t, p, d)
+        Maps input to bisimulation embeddings
+        input: 
+        - If bypass_dinov2=False: z_dino: (b, t, p, d) - DinoV2 embeddings
+        - If bypass_dinov2=True: obs: (b, t, 3, img_size, img_size) - Raw observations
         output: z_bisim: (b, t, bisim_dim)
         """
-        b, t, p, d = z_dino.shape
-        # print(f"BISIM ENCODE: DinoV2 shape={z_dino.shape}, features={p*d}, bisim_dim={self.latent_dim}")
-        z_dino = z_dino.reshape(b * t, p * d)
-        z_bisim = self.encoder(z_dino)
+        if self.bypass_dinov2:
+            b, t, c, h, w = input_data.shape
+            input_flat = input_data.reshape(b * t, c * h * w)
+        else:
+            b, t, p, d = input_data.shape
+            input_flat = input_data.reshape(b * t, p * d)
+        
+        z_bisim = self.encoder(input_flat)
         z_bisim = z_bisim.reshape(b, t, self.latent_dim)
         
         # Log encoding details
         self.log_bisim({
-            "event": "bisim_encode",
-            "input_shape": list(z_dino.shape),
-            "input_reshaped_shape": list(z_dino.shape),
+            "event": "bisim_encode_direct" if self.bypass_dinov2 else "bisim_encode_dinov2",
+            "input_shape": list(input_data.shape),
+            "input_flattened_shape": list(input_flat.shape),
             "output_shape": list(z_bisim.shape),
+            "bypass_dinov2": self.bypass_dinov2,
             "input_stats": {
-                "mean": float(z_dino.mean().item()),
-                "std": float(z_dino.std().item()),
-                "min": float(z_dino.min().item()),
-                "max": float(z_dino.max().item()),
+                "mean": float(input_data.mean().item()),
+                "std": float(input_data.std().item()),
+                "min": float(input_data.min().item()),
+                "max": float(input_data.max().item()),
             },
             "output_stats": {
                 "mean": float(z_bisim.mean().item()),
