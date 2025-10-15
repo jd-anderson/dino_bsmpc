@@ -85,6 +85,7 @@ model:
   train_predictor: True
   train_decoder: True
   train_bisim: True  # Control whether to train the bisimulation model
+  bypass_dinov2: True  # If True, train obs -> bisim directly, bypassing DinoV2
 
   train_w_std_loss: True
   train_w_reward_loss: True

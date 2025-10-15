@@ -26,6 +26,7 @@ class VWorldModel(nn.Module):
             num_pcs: int = 10,
             PCAloss_epoch: int=50,
             train_bisim=True,  # New parameter to control training of bisimulation model
+            bypass_dinov2=False,  # New parameter to bypass DinoV2 and train obs -> bisim directly
             bisim_memory_buffer_size=0,  # Size of memory buffer for cross-batch bisimulation (0 = disabled)
             bisim_comparison_size=20,  # Total number of states to compare in bisimulation learning
             proprio_dim=0,
@@ -57,6 +58,7 @@ class VWorldModel(nn.Module):
 
         # Initialize bisimulation model if provided or create a new one
         self.has_bisim = bisim_model is not None
+        self.bypass_dinov2 = bypass_dinov2
         if self.has_bisim:
             self.bisim_model = bisim_model
             self.bisim_latent_dim = bisim_latent_dim
@@ -346,26 +348,31 @@ class VWorldModel(nn.Module):
         z_obs = {"visual": z_visual, "proprio": z_proprio}
         return z_obs, z_act
 
-    def encode_bisim(self, z_dino):
+    def encode_bisim(self, input_data):
         """
-        Maps DinoV2 embeddings to bisimulation embeddings
-        input: z_dino (dict): {"visual": (b, t, p, d), "proprio": (b, t, d)}
+        Maps input to bisimulation embeddings
+        input: 
+        - If bypass_dinov2=False: z_dino (dict): {"visual": (b, t, p, d), "proprio": (b, t, d)} - DinoV2 embeddings
+        - If bypass_dinov2=True: obs (dict): {"visual": (b, t, 3, h, w), "proprio": (b, t, d)} - Raw observations
         output: z_bisim: (b, t, bisim_dim)
         """
         if not self.has_bisim:
             return None
 
-        # Add focused log to confirm encoder is being called
-        # print(f"BISIM ENCODER: Called encode_bisim with visual shape {z_dino['visual'].shape}")
-
-        # Use only visual embeddings for bisimulation
-        if hasattr(self.bisim_model, "module"):
-            z_bisim = self.bisim_model.module.encode(z_dino["visual"])
+        if self.bypass_dinov2:
+            # Direct encoding from raw visual observations
+            visual_obs = input_data["visual"]  # (b, t, 3, h, w)
+            if hasattr(self.bisim_model, "module"):
+                z_bisim = self.bisim_model.module.encode(visual_obs)
+            else:
+                z_bisim = self.bisim_model.encode(visual_obs)
         else:
-            z_bisim = self.bisim_model.encode(z_dino["visual"])
-
-        # Log output dimensions
-        # print(f"BISIM ENCODER: Output bisimulation embeddings shape: {z_bisim.shape}")
+            # Original DinoV2 -> bisimulation encoding
+            # Use only visual embeddings for bisimulation
+            if hasattr(self.bisim_model, "module"):
+                z_bisim = self.bisim_model.module.encode(input_data["visual"])
+            else:
+                z_bisim = self.bisim_model.encode(input_data["visual"])
 
         return z_bisim
 
@@ -600,20 +607,37 @@ class VWorldModel(nn.Module):
         """
         loss = 0
         loss_components = {}
-        z = self.encode(obs, act)
-        z_src = z[:, : self.num_hist, :, :]  # (b, num_hist, num_patches, dim)
-        z_tgt = z[:, self.num_pred:, :, :]  # (b, num_hist, num_patches, dim)
         visual_src = obs['visual'][:, : self.num_hist, ...]  # (b, num_hist, 3, img_size, img_size)
         visual_tgt = obs['visual'][:, self.num_pred:, ...]  # (b, num_hist, 3, img_size, img_size)
+        z = None
+        if (not self.bypass_dinov2) or (self.predictor is not None) or (self.decoder is not None):
+            z = self.encode(obs, act)
+            z_src = z[:, : self.num_hist, :, :]  # (b, num_hist, num_patches, dim)
+            z_tgt = z[:, self.num_pred:, :, :]  # (b, num_hist, num_patches, dim)
 
         # Process embeddings with bisimulation if available
         if self.has_bisim:
-            z_obs_src, z_act_src = self.separate_emb(z_src)
-            z_obs_tgt, z_act_tgt = self.separate_emb(z_tgt)
+            if self.bypass_dinov2:
+                # Direct encoding from raw observations
+                obs_src = {
+                    "visual": visual_src,  # (b, num_hist, 3, img_size, img_size)
+                    "proprio": obs['proprio'][:, : self.num_hist, ...]  # (b, num_hist, proprio_dim)
+                }
+                obs_tgt = {
+                    "visual": visual_tgt,  # (b, num_hist, 3, img_size, img_size)
+                    "proprio": obs['proprio'][:, self.num_pred:, ...]  # (b, num_hist, proprio_dim)
+                }
+                
+                # Get bisimulation embeddings directly from raw observations
+                z_bisim_src = self.encode_bisim(obs_src)
+                z_bisim_tgt = self.encode_bisim(obs_tgt)
+            else:
+                z_obs_src, z_act_src = self.separate_emb(z_src)
+                z_obs_tgt, z_act_tgt = self.separate_emb(z_tgt)
 
-            # Get bisimulation embeddings
-            z_bisim_src = self.encode_bisim(z_obs_src)
-            z_bisim_tgt = self.encode_bisim(z_obs_tgt)
+                # Get bisimulation embeddings
+                z_bisim_src = self.encode_bisim(z_obs_src)
+                z_bisim_tgt = self.encode_bisim(z_obs_tgt)
 
             # Predict next bisimulation states using ViT predictor
             action_emb = self.encode_act(act[:, : self.num_hist])
@@ -851,10 +875,19 @@ class VWorldModel(nn.Module):
         act_0 = act[:, :num_obs_init]
         action = act[:, num_obs_init:]
         
-        # Initial encoding to DINOv2 then to bisim
-        z_dino = self.encode(obs_0, act_0)
-        z_obses_init, _ = self.separate_emb(z_dino)
-        z_bisim = self.encode_bisim(z_obses_init)
+        # Initial encoding
+        z_obses_init = None
+        if not self.bypass_dinov2 or not self.training:
+            z_dino = self.encode(obs_0, act_0)
+            z_obses_init, _ = self.separate_emb(z_dino)
+        # For bypass mode, encode_bisim expects raw visuals; otherwise DINO tokens
+        if self.bypass_dinov2:
+            visuals = obs_0["visual"]
+            if visuals.ndim == 4:
+                visuals = visuals.unsqueeze(0)
+            z_bisim = self.encode_bisim({"visual": visuals, "proprio": obs_0.get("proprio", None)})
+        else:
+            z_bisim = self.encode_bisim(z_obses_init)
         
         # Initialize action history with initial actions
         action_history = act_0  # (b, num_obs_init, action_dim)
@@ -917,13 +950,20 @@ class VWorldModel(nn.Module):
         b = obs_0['visual'].shape[0]
         t_total = z_bisim.shape[1]
         device = z_bisim.device
-        dummy_z_obses = {
-            "visual": torch.zeros(b, t_total, z_obses_init["visual"].shape[2], z_obses_init["visual"].shape[3], device=device),
-            "proprio": torch.zeros(b, t_total, z_obses_init["proprio"].shape[2], device=device)
-        }
-        # Copy initial observations
-        dummy_z_obses["visual"][:, :num_obs_init] = z_obses_init["visual"]
-        dummy_z_obses["proprio"][:, :num_obs_init] = z_obses_init["proprio"]
+        if z_obses_init is not None:
+            dummy_z_obses = {
+                "visual": torch.zeros(b, t_total, z_obses_init["visual"].shape[2], z_obses_init["visual"].shape[3], device=device),
+                "proprio": torch.zeros(b, t_total, z_obses_init["proprio"].shape[2], device=device)
+            }
+            # Copy initial observations
+            dummy_z_obses["visual"][:, :num_obs_init] = z_obses_init["visual"]
+            dummy_z_obses["proprio"][:, :num_obs_init] = z_obses_init["proprio"]
+        else:
+            # Minimal dummy when DINO path is skipped; downstream should ignore when decoder/err_eval not used
+            dummy_z_obses = {
+                "visual": torch.zeros(b, t_total, 0, 0, device=device),
+                "proprio": torch.zeros(b, t_total, 0, device=device)
+            }
         
         return dummy_z_obses, z_dino, z_bisim
     
@@ -941,7 +981,14 @@ class VWorldModel(nn.Module):
         # Initial encoding to DINOv2 then to bisim
         z_dino = self.encode(obs_0, act_0)
         z_obses_init, _ = self.separate_emb(z_dino)
-        z_bisim = self.encode_bisim(z_obses_init)
+        # For bypass mode, encode_bisim expects raw visuals; otherwise DINO tokens
+        if self.bypass_dinov2:
+            visuals = obs_0["visual"]
+            if visuals.ndim == 4:
+                visuals = visuals.unsqueeze(0)
+            z_bisim = self.encode_bisim({"visual": visuals, "proprio": obs_0.get("proprio", None)})
+        else:
+            z_bisim = self.encode_bisim(z_obses_init)
         
         # Initialize action history with initial actions
         action_history = act_0  # (b, num_obs_init, action_dim)

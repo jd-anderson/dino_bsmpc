@@ -335,8 +335,16 @@ class Trainer:
                     latent_dim=self.cfg.get('bisim_latent_dim', 64),
                     hidden_dim=self.cfg.get('bisim_hidden_dim', 256),
                     action_dim=self.cfg.action_emb_dim,
+                    bypass_dinov2=self.cfg.model.get('bypass_dinov2', False),
+                    img_size=self.cfg.img_size,
                 )
+                bypass_mode = self.cfg.model.get('bypass_dinov2', False)
                 log.info(f"Initialized bisimulation model with latent dim {self.cfg.get('bisim_latent_dim', 64)}")
+                log.info(f"Bypass DinoV2 mode: {bypass_mode}")
+                if bypass_mode:
+                    log.info("Training obs -> bisim directly, bypassing DinoV2 embeddings")
+                else:
+                    log.info("Training obs -> DinoV2 -> bisim")
 
             if not self.train_bisim:
                 for param in self.bisim_model.parameters():
@@ -370,6 +378,7 @@ class Trainer:
             train_w_std_loss=self.train_w_std_loss,
             train_w_reward_loss=self.train_w_reward_loss,
             accelerate=self.accelerate,
+            bypass_dinov2=self.cfg.model.get('bypass_dinov2', False),
             bisim_memory_buffer_size=self.cfg.get('bisim_memory_buffer_size', 0),
             bisim_comparison_size=self.cfg.get('bisim_comparison_size', 20),
         )
@@ -791,7 +800,11 @@ class Trainer:
 
                     # Also calculate bisimulation distance
                     z_bisim_last = z_bisim[:, -1:, :]
-                    z_bisim_g = self.model.encode_bisim(z_g)
+                    # Handle bypass mode for goal encoding
+                    if self.cfg.model.get('bypass_dinov2', False):
+                        z_bisim_g = self.model.encode_bisim(obs_g)
+                    else:
+                        z_bisim_g = self.model.encode_bisim(z_g)
                     bisim_dist = torch.norm(z_bisim_last - z_bisim_g, dim=-1).mean()
 
                     log_key = f"bisim_dist_rollout{postfix}"

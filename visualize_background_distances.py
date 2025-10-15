@@ -313,18 +313,24 @@ def encode_observations(observations, model, device):
 
             with torch.no_grad():
                 model.eval()
-
-                # get DinoV2 embeddings (directly from encoder forward pass)
-                b = visual.shape[0]
-                vis = model.encoder_transform(visual.view(b, visual.shape[2], visual.shape[3], visual.shape[4]))
-                dino_tokens = model.encoder.forward(vis)  # (b, p, d)
-                dinov2_emb = dino_tokens.flatten(1).squeeze().cpu().numpy()
-
-                # get bisimulation embeddings via encode_bisim on encode_obs output
-                z_obs = model.encode_obs(obs_dict)
+                bypass = getattr(model, 'bypass_dinov2', False)
+                dinov2_emb = None
                 bisim_emb = None
+
+                if not bypass:
+                    # get DinoV2 embeddings (directly from encoder forward pass)
+                    b = visual.shape[0]
+                    vis = model.encoder_transform(visual.view(b, visual.shape[2], visual.shape[3], visual.shape[4]))
+                    dino_tokens = model.encoder.forward(vis)  # (b, p, d)
+                    dinov2_emb = dino_tokens.flatten(1).squeeze().cpu().numpy()
+
+                # get bisimulation embeddings
                 if getattr(model, 'has_bisim', False):
-                    z_bisim = model.encode_bisim(z_obs)
+                    if bypass:
+                        z_bisim = model.encode_bisim(obs_dict)
+                    else:
+                        z_obs = model.encode_obs(obs_dict)
+                        z_bisim = model.encode_bisim(z_obs)
                     bisim_emb = z_bisim.squeeze().cpu().numpy()
 
                 encodings[bg_name] = {
@@ -472,12 +478,18 @@ def create_visualization(all_encodings, model_names, model_titles):
                 bisim_states.append(state_id)
                 bisim_bgs.append(bg_name)
 
-        # Create single figure with two subplots
-        fig, (ax_dino, ax_bisim) = plt.subplots(1, 2, figsize=(12, 5))
-        plt.subplots_adjust(bottom=0.22, wspace=0.25)
+        # Determine if we have any DINO points
+        has_dino = len(dino_pts) > 0
+        # Create figure: two subplots if DINO present, else only bisim subplot
+        if has_dino:
+            fig, (ax_dino, ax_bisim) = plt.subplots(1, 2, figsize=(12, 5))
+            plt.subplots_adjust(bottom=0.22, wspace=0.25)
+        else:
+            fig, ax_bisim = plt.subplots(1, 1, figsize=(6, 5))
+            plt.subplots_adjust(bottom=0.22)
 
         # DINO subplot
-        if dino_pts:
+        if has_dino:
             X = np.vstack(dino_pts)
             X2 = PCA(n_components=2).fit_transform(X)
             unique_states = sorted(set(dino_states))
@@ -502,8 +514,9 @@ def create_visualization(all_encodings, model_names, model_titles):
                                 s=70, alpha=0.7, edgecolors='k', linewidths=0.3)
             ax_dino.set_title('DINOv2 Space (all states)')
             ax_dino.grid(True, alpha=0.3)
-        else:
-            ax_dino.text(0.5, 0.5, 'No DINOv2 data', ha='center', va='center', transform=ax_dino.transAxes)
+        elif has_dino is False:
+            # No DINO axis when bypassing or no data; nothing to draw here
+            pass
 
         # Bisim subplot
         if bisim_pts:
@@ -533,7 +546,7 @@ def create_visualization(all_encodings, model_names, model_titles):
         else:
             ax_bisim.text(0.5, 0.5, 'No bisim data', ha='center', va='center', transform=ax_bisim.transAxes)
 
-        if dino_pts:
+        if has_dino:
             unique_states_leg = sorted(set(dino_states))
             unique_bgs_leg = background_order  # fixed order legends
             state_to_color_leg = {sid: color_cycle[i % len(color_cycle)] for i, sid in enumerate(unique_states_leg)}
@@ -553,9 +566,11 @@ def create_visualization(all_encodings, model_names, model_titles):
                                   label=BACKGROUNDS.get(bg, {'title': bg}).get('title', bg)) for bg in unique_bgs_leg]
 
         if state_handles:
-            fig.legend(handles=state_handles, title='States', loc='lower center', bbox_to_anchor=(0.3, -0.02), ncol=min(len(state_handles), 6))
+            anchor_x = 0.3 if has_dino else 0.25
+            fig.legend(handles=state_handles, title='States', loc='lower center', bbox_to_anchor=(anchor_x, -0.02), ncol=min(len(state_handles), 6))
         if bg_handles:
-            fig.legend(handles=bg_handles, title='Backgrounds', loc='lower center', bbox_to_anchor=(0.75, -0.02), ncol=min(len(bg_handles), 6))
+            anchor_x = 0.75 if has_dino else 0.75
+            fig.legend(handles=bg_handles, title='Backgrounds', loc='lower center', bbox_to_anchor=(anchor_x, -0.02), ncol=min(len(bg_handles), 6))
 
         figs.append(fig)
 
