@@ -365,6 +365,10 @@ class Trainer:
             action_dim=action_emb_dim,
             concat_dim=self.cfg.concat_dim,
             var_loss_coef=self.cfg.get('var_loss_coef', 1.0),
+            PCA1_loss_target=self.cfg.get('PCA1_loss_target', 0.01),
+            VC_target=self.cfg.get('VC_target', 1.0),
+            num_pcs=self.cfg.get('num_pcs', 10),
+            PCAloss_epoch=self.cfg.get('PCAloss_epoch', 10),
             bisim_latent_dim=self.cfg.get('bisim_latent_dim', 64),
             bisim_hidden_dim=self.cfg.get('bisim_hidden_dim', 256),
             num_action_repeat=self.cfg.num_action_repeat,
@@ -540,7 +544,7 @@ class Trainer:
             plot = i == 0  # only plot from the first batch
             self.model.train()
             z_out, visual_out, visual_reconstructed, loss, loss_components = self.model(
-                obs, act
+                obs, act, self.epoch
             )
 
             self.encoder_optimizer.zero_grad()
@@ -656,7 +660,7 @@ class Trainer:
             plot = i == 0
             self.model.eval()
             z_out, visual_out, visual_reconstructed, loss, loss_components = self.model(
-                obs, act
+                obs, act, self.epoch
             )
 
             loss = self.accelerator.gather_for_metrics(loss).mean()
