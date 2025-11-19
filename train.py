@@ -332,11 +332,13 @@ class Trainer:
 
                 self.bisim_model = BisimModel(
                     input_dim=input_dim,
-                    latent_dim=self.cfg.get('bisim_latent_dim', 64),
+                    latent_dim=self.cfg.get('bisim_latent_dim', 8),
                     hidden_dim=self.cfg.get('bisim_hidden_dim', 256),
                     action_dim=self.cfg.action_emb_dim,
                     bypass_dinov2=self.cfg.model.get('bypass_dinov2', False),
                     img_size=self.cfg.img_size,
+                    num_patches=196,
+                    patch_emb_dim=384,
                 )
                 bypass_mode = self.cfg.model.get('bypass_dinov2', False)
                 log.info(f"Initialized bisimulation model with latent dim {self.cfg.get('bisim_latent_dim', 64)}")
@@ -369,7 +371,7 @@ class Trainer:
             VC_target=self.cfg.get('VC_target', 1.0),
             num_pcs=self.cfg.get('num_pcs', 10),
             PCAloss_epoch=self.cfg.get('PCAloss_epoch', 10),
-            bisim_latent_dim=self.cfg.get('bisim_latent_dim', 64),
+            bisim_latent_dim=self.cfg.get('bisim_latent_dim', 8),
             bisim_hidden_dim=self.cfg.get('bisim_hidden_dim', 256),
             num_action_repeat=self.cfg.num_action_repeat,
             num_proprio_repeat=self.cfg.num_proprio_repeat,

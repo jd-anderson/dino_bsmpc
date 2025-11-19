@@ -20,10 +20,10 @@ class VWorldModel(nn.Module):
             bisim_latent_dim=64,  # New parameter for bisimulation latent dimension
             bisim_hidden_dim=256,  # New parameter for bisimulation hidden dimension
             bisim_coef=1.0,  # New parameter for bisimulation loss coefficient
-            var_loss_coef: float = 1.0,
-            PCA1_loss_target: float = 0.01, 
-            VC_target: float = 1.0,
-            num_pcs: int = 10,
+            var_loss_coef: float=1.0,
+            PCA1_loss_target: float=0.01,
+            VC_target: float=1.0,
+            num_pcs: int=10,
             PCAloss_epoch: int=50,
             train_bisim=True,  # New parameter to control training of bisimulation model
             bypass_dinov2=False,  # New parameter to bypass DinoV2 and train obs -> bisim directly
@@ -62,32 +62,43 @@ class VWorldModel(nn.Module):
         if self.has_bisim:
             self.bisim_model = bisim_model
             self.bisim_latent_dim = bisim_latent_dim
-            self.bisim_hidden_dim= bisim_hidden_dim
+            self.bisim_hidden_dim = bisim_hidden_dim
+            self.bisim_patch_dim = bisim_latent_dim
             self.train_bisim = train_bisim
             self.bisim_coef = bisim_coef
 
             # Create ViT predictor for bisimulation space sequence modeling
             if self.train_predictor and predictor is not None:
                 from models.vit import ViTPredictor
-                
-                # Get action embedding dimension
+
+                # Get action and proprio embedding dimensions
                 action_emb_dim = getattr(action_encoder, 'emb_dim', action_dim)
-                
-                # Create bisim predictor with appropriate dimensions
-                # Using 1 patch since bisim embedding is already flattened
+                proprio_emb_dim = getattr(proprio_encoder, 'emb_dim', proprio_dim)
+
+                self.action_emb_dim = action_emb_dim
+                self.proprio_emb_dim = proprio_emb_dim
+
+                # get device from encoder
+                device = next(encoder.parameters()).device
+
+                # Calculate new patch dimension after concatenating action and proprio
+                self.bisim_combined_patch_dim = self.bisim_patch_dim + action_emb_dim + proprio_emb_dim
+
+                # Create bisim predictor with patch structure
+                # patches now include action and proprio concatenated
                 self.bisim_predictor = ViTPredictor(
-                    num_patches=1,  # Single "patch" for bisim vector
+                    num_patches=196,
                     num_frames=num_hist,
-                    dim=bisim_latent_dim + action_emb_dim * num_action_repeat,
-                    depth=6,  # Same as default predictor config
-                    heads=16,  # Same as default predictor config
+                    dim=self.bisim_combined_patch_dim,
+                    depth=6,
+                    heads=16,
                     mlp_dim=2048,
                     dropout=0.1,
                     emb_dropout=0
                 )
-                device = next(encoder.parameters()).device
                 self.bisim_predictor = self.bisim_predictor.to(device)
-                print(f"Created ViT bisim predictor with dim={bisim_latent_dim + action_emb_dim * num_action_repeat} on device {device}")
+                print(
+                    f"Created patch-based ViT bisim predictor with 196 patches (action+proprio concatenated), patch_dim={self.bisim_combined_patch_dim} on device {device}")
             else:
                 self.bisim_predictor = None
 
@@ -99,15 +110,18 @@ class VWorldModel(nn.Module):
             if self.use_memory_buffer:
                 # init memory buffers
                 action_emb_dim = getattr(action_encoder, 'emb_dim', action_dim)
-
-                self.register_buffer('bisim_memory_states', torch.zeros(bisim_memory_buffer_size, num_hist, bisim_latent_dim))
-                self.register_buffer('bisim_memory_next_states', torch.zeros(bisim_memory_buffer_size, num_hist, bisim_latent_dim))
-                self.register_buffer('bisim_memory_actions', torch.zeros(bisim_memory_buffer_size, num_hist, action_emb_dim))
+                self.register_buffer('bisim_memory_states',
+                                     torch.zeros(bisim_memory_buffer_size, num_hist, 196, self.bisim_patch_dim))
+                self.register_buffer('bisim_memory_next_states',
+                                     torch.zeros(bisim_memory_buffer_size, num_hist, 196, self.bisim_patch_dim))
+                self.register_buffer('bisim_memory_actions',
+                                     torch.zeros(bisim_memory_buffer_size, num_hist, action_emb_dim))
                 self.register_buffer('bisim_memory_rewards', torch.zeros(bisim_memory_buffer_size, num_hist, 1))
                 self.register_buffer('bisim_memory_ptr', torch.zeros(1, dtype=torch.long))
                 self.register_buffer('bisim_memory_full', torch.zeros(1, dtype=torch.bool))
                 print(f"Initialized bisimulation memory buffer with size {bisim_memory_buffer_size}")
                 print(f"Action embedding dimension: {action_emb_dim}")
+                print(f"Memory buffer stores patches (patch_dim={self.bisim_patch_dim})")
             else:
                 print("Bisimulation memory buffer disabled (size=0)")
         else:
@@ -202,7 +216,7 @@ class VWorldModel(nn.Module):
 
     def encode(self, obs, act):
         """
-        input :  obs (dict): "visual", "proprio", (b, num_frames, 3, img_size, img_size) 
+        input :  obs (dict): "visual", "proprio", (b, num_frames, 3, img_size, img_size)
         output:    z (tensor): (b, num_frames, num_patches, emb_dim)
         """
         z_dct = self.encode_obs(obs)
@@ -263,50 +277,50 @@ class VWorldModel(nn.Module):
         z = self.predictor(z)
         z = rearrange(z, "b (t p) d -> b t p d", t=T)
         return z
-    
-    def predict_bisim(self, z_bisim, action_emb):
+
+    def predict_bisim(self, z_bisim, action_emb, proprio_emb):
         """
-        Predict next bisimulation state using ViT predictor (sequence modeling)
+        Predict next bisimulation state
         Used for dynamics training and rollouts
-        input : z_bisim: (b, num_hist, bisim_dim) - history of bisim states
-                action_emb: (b, num_hist, action_emb_dim) - history of actions that led to those states
-        output: z_bisim_next: (b, num_hist, bisim_dim) - predicted next states
+        input : z_bisim: (b, num_hist, num_patches, patch_dim) - history of bisim patches
+                action_emb: (b, num_hist, action_emb_dim) - history of actions
+                proprio_emb: (b, num_hist, proprio_emb_dim) - history of proprio
+        output: z_bisim_next: (b, num_hist, num_patches, patch_dim) - predicted next patches
         """
         if not hasattr(self, 'bisim_predictor') or self.bisim_predictor is None:
             raise RuntimeError("Bisim predictor not initialized. Make sure train_predictor=True and has_bisim=True")
-            
-        b, t, d = z_bisim.shape
-        
+
+        b, t, n_patches, patch_dim = z_bisim.shape
+
         # Verify dimensions match
         if action_emb.shape[1] != t:
-            raise ValueError(f"Action embedding temporal dimension {action_emb.shape[1]} must match z_bisim temporal dimension {t}")
-        
-        # Concatenate bisim state with action embeddings
-        if self.concat_dim == 1:
-            # Combine bisim and action embeddings
-            z_combined = torch.cat([z_bisim, action_emb], dim=-1)
+            raise ValueError(
+                f"Action embedding temporal dimension {action_emb.shape[1]} must match z_bisim temporal dimension {t}")
+        if proprio_emb.shape[1] != t:
+            raise ValueError(
+                f"Proprio embedding temporal dimension {proprio_emb.shape[1]} must match z_bisim temporal dimension {t}")
 
-            # Treat the combined vector as a single "patch"
-            z_combined = z_combined.unsqueeze(2)  # (b, t, 1, combined_dim)
-            
-            # Reshape for bisim predictor
-            z_combined = rearrange(z_combined, "b t p d -> b (t p) d")
-            
-            # Use the bisim predictor
-            z_pred = self.bisim_predictor(z_combined)  # (b, t*1, combined_dim)
-            
-            # Reshape back
-            z_pred = rearrange(z_pred, "b (t p) d -> b t p d", t=t, p=1)
-            
-            # Extract predicted bisim state (remove the patch dimension)
-            z_pred = z_pred.squeeze(2)  # (b, t, combined_dim)
-            z_bisim_next = z_pred[..., :d]  # Take only bisim dimensions
-        else:
-            raise NotImplementedError("Only concat_dim=1 supported for bisim prediction")
-        
+        # Expand action and proprio to match patch dimensions
+        # (b, t, 1, action_emb_dim) -> (b, t, n_patches, action_emb_dim)
+        action_emb_expanded = action_emb.unsqueeze(2).expand(b, t, n_patches, -1)
+        proprio_emb_expanded = proprio_emb.unsqueeze(2).expand(b, t, n_patches, -1) # (b, t, n_patches, proprio_emb_dim)
+
+        # (b, t, n_patches, patch_dim + action_emb_dim + proprio_emb_dim)
+        z_combined = torch.cat([z_bisim, action_emb_expanded, proprio_emb_expanded],
+                               dim=-1)  # (b, t, n_patches, combined_patch_dim)
+
+        # Reshape for bisim predictor
+        z_combined = rearrange(z_combined, "b t p d -> b (t p) d")
+
+        # Use the bisim predictor
+        z_pred = self.bisim_predictor(z_combined)  # (b, (t*n_patches), combined_patch_dim)
+
+        # Reshape back
+        z_pred = rearrange(z_pred, "b (t p) d -> b t p d", t=t, p=n_patches)
+
+        z_bisim_next = z_pred[:, :, :, :patch_dim]  # (b, t, n_patches, patch_dim)
+
         return z_bisim_next
-    
-
 
     def decode(self, z):
         """
@@ -351,10 +365,10 @@ class VWorldModel(nn.Module):
     def encode_bisim(self, input_data):
         """
         Maps input to bisimulation embeddings
-        input: 
+        input:
         - If bypass_dinov2=False: z_dino (dict): {"visual": (b, t, p, d), "proprio": (b, t, d)} - DinoV2 embeddings
         - If bypass_dinov2=True: obs (dict): {"visual": (b, t, 3, h, w), "proprio": (b, t, d)} - Raw observations
-        output: z_bisim: (b, t, bisim_dim)
+        output: z_bisim: (b, t, num_patches, patch_dim)
         """
         if not self.has_bisim:
             return None
@@ -376,42 +390,18 @@ class VWorldModel(nn.Module):
 
         return z_bisim
 
-    def predict_next_bisim(self, z_bisim, action_emb):
-        """
-        Predicts next bisimulation state
-        input: z_bisim: (b, t, bisim_dim)
-               action_emb: (b, t, action_emb_dim)
-        output: next_z_bisim: (b, t, bisim_dim)
-        """
-        if not self.has_bisim:
-            return None
-
-        b, t, d = z_bisim.shape
-        # print(f"BISIM PREDICTION: Input bisim state shape: {z_bisim.shape}, dim={d}")
-        z_bisim_flat = z_bisim.reshape(b * t, d)
-        action_emb_flat = action_emb.reshape(b * t, -1)
-
-        if hasattr(self.bisim_model, "module"):
-            next_z_bisim = self.bisim_model.module.next(z_bisim_flat, action_emb_flat)
-        else:
-            next_z_bisim = self.bisim_model.next(z_bisim_flat, action_emb_flat)
-        next_z_bisim = next_z_bisim.reshape(b, t, d)
-        # print(f"BISIM PREDICTION: Output next bisim state shape: {next_z_bisim.shape}, dim={d}")
-
-        return next_z_bisim
-
     def update_memory_buffer(self, z_bisim, next_z_bisim, action_emb, reward):
         """
         Update the memory buffer with new samples
-        input: z_bisim: (b, t, bisim_dim)
-               next_z_bisim: (b, t, bisim_dim)
+        input: z_bisim: (b, t, num_patches, patch_dim)
+               next_z_bisim: (b, t, num_patches, patch_dim)
                action_emb: (b, t, action_emb_dim)
                reward: (b, t, 1)
         """
         if not self.use_memory_buffer or not self.training:
             return
 
-        b, t, _ = z_bisim.shape
+        b, t, n_patches, patch_dim = z_bisim.shape
 
         # store samples in memory buffer using circular buffer
         for i in range(b):
@@ -464,7 +454,8 @@ class VWorldModel(nn.Module):
     def calc_bisim_loss(self, z_bisim, next_z_bisim, action_emb, epoch, reward=None, discount=0.99):
         """
         Calculate bisimulation loss
-        input: z_bisim: (b, t, bisim_dim)
+        input: z_bisim: (b, t, num_patches, patch_dim)
+               next_z_bisim: (b, t, num_patches, patch_dim)
                action_emb: (b, t, action_emb_dim)
                reward: (b, t, 1) or None (will be predicted)
         output: bisim_loss: (b, t)
@@ -472,7 +463,8 @@ class VWorldModel(nn.Module):
         if not self.has_bisim:
             return torch.tensor(0.0, device=z_bisim.device)
 
-        b, t, d = z_bisim.shape
+        b, t, n_patches, patch_dim = z_bisim.shape  # Both have patch_dim (visual only)
+
         batch_size = b
 
         # Debug prints for dimensions
@@ -481,13 +473,9 @@ class VWorldModel(nn.Module):
 
         # Predict rewards if not provided
         if reward is None:
-            z_bisim_flat = z_bisim.reshape(b * t, d)
-            action_emb_flat = action_emb.reshape(b * t, -1)
+            z_bisim_flat = z_bisim.reshape(b * t, n_patches, -1)  # (b*t, n_patches, patch_dim)
+            action_emb_flat = action_emb.reshape(b * t, -1)  # (b*t, action_emb_dim)
 
-            # Debug prints for flattened dimensions
-            # print(f"DEBUG - calc_bisim_loss flattened z_bisim dimensions: {z_bisim_flat.shape}")
-            # print(f"DEBUG - calc_bisim_loss flattened action_emb dimensions: {action_emb_flat.shape}")
-            
             if hasattr(self.bisim_model, "module"):
                 reward = self.bisim_model.module.predict_reward(z_bisim_flat, action_emb_flat)
             else:
@@ -596,7 +584,7 @@ class VWorldModel(nn.Module):
         # print(f"DEBUG: Final bisim_loss shape: {bisim_loss.shape}")
         return bisim_loss, z_dist, r_dist, transition_dist, var_loss, cov_reg
 
-    def forward(self, obs, act, epoch: int=0):
+    def forward(self, obs, act, epoch: int = 0):
         """
         input:  obs (dict):  "visual", "proprio" (b, num_frames, 3, img_size, img_size)
                 act: (b, num_frames, action_dim)
@@ -627,7 +615,7 @@ class VWorldModel(nn.Module):
                     "visual": visual_tgt,  # (b, num_hist, 3, img_size, img_size)
                     "proprio": obs['proprio'][:, self.num_pred:, ...]  # (b, num_hist, proprio_dim)
                 }
-                
+
                 # Get bisimulation embeddings directly from raw observations
                 z_bisim_src = self.encode_bisim(obs_src)
                 z_bisim_tgt = self.encode_bisim(obs_tgt)
@@ -641,7 +629,12 @@ class VWorldModel(nn.Module):
 
             # Predict next bisimulation states using ViT predictor
             action_emb = self.encode_act(act[:, : self.num_hist])
-            next_z_bisim_src = self.predict_bisim(z_bisim_src, action_emb)
+            proprio_emb = self.encode_proprio(obs['proprio'][:, : self.num_hist]) if 'proprio' in obs else None
+            if proprio_emb is None:
+                # dummy
+                proprio_emb = torch.zeros(action_emb.shape[0], action_emb.shape[1], self.proprio_emb_dim,
+                                          device=action_emb.device)
+            next_z_bisim_src = self.predict_bisim(z_bisim_src, action_emb, proprio_emb)
 
             # Standard loss in bisimulation space (L2 between predicted and GT next states)
             standard_l2_loss = self.emb_criterion(next_z_bisim_src, z_bisim_tgt)
@@ -774,34 +767,34 @@ class VWorldModel(nn.Module):
                             serializable_data[key][k] = v
                 else:
                     serializable_data[key] = value
-            
+
             log_entry = {
                 "timestamp": np.datetime64('now').astype(str),
                 **serializable_data
             }
             with open("rollout_log.json", "a") as f:
                 f.write(json.dumps(log_entry) + "\n")
-        
+
         log_rollout({
             "event": "rollout_start",
             "obs_0_shapes": {k: list(v.shape) for k, v in obs_0.items()},
             "act_shape": list(act.shape),
             "has_bisim": self.has_bisim,
         })
-        
+
         num_obs_init = obs_0['visual'].shape[1]
         act_0 = act[:, :num_obs_init]
         action = act[:, num_obs_init:]
-        
+
         # Use bisimulation space for rollout if available
         if self.has_bisim:
             return self.rollout_bisim(obs_0, act)
-        
+
         # Original DINOv2 space rollout
         z = self.encode(obs_0, act_0)
         t = 0
         inc = 1
-        
+
         log_rollout({
             "event": "rollout_initial_encoding",
             "num_obs_init": num_obs_init,
@@ -809,14 +802,14 @@ class VWorldModel(nn.Module):
             "action_shape": list(action.shape),
             "z_shape": list(z.shape),
         })
-        
+
         while t < action.shape[1]:
             z_pred = self.predict(z[:, -self.num_hist:])
             z_new = z_pred[:, -inc:, ...]
             z_new = self.replace_actions_from_z(z_new, action[:, t: t + inc, :])
             z = torch.cat([z, z_new], dim=1)
             t += inc
-            
+
             log_rollout({
                 "event": "rollout_step",
                 "step": t,
@@ -842,7 +835,7 @@ class VWorldModel(nn.Module):
         # If using bisimulation, also return bisimulation embeddings
         if self.has_bisim:
             z_bisim = self.encode_bisim(z_obses)
-            
+
             log_rollout({
                 "event": "rollout_bisimulation_encoding",
                 "z_bisim_shape": list(z_bisim.shape),
@@ -853,17 +846,17 @@ class VWorldModel(nn.Module):
                     "max": float(z_bisim.max().item()),
                 },
             })
-            
+
             # print(f"ROLLOUT COMPLETE: Returning with bisimulation embeddings of shape {z_bisim.shape}, dim={z_bisim.shape[-1]}")
             return z_obses, z, z_bisim
 
         log_rollout({
             "event": "rollout_complete_no_bisim",
         })
-        
+
         # print("ROLLOUT COMPLETE: Returning without bisimulation embeddings")
         return z_obses, z
-    
+
     def rollout_bisim(self, obs_0, act):
         """
         Rollout in bisimulation space
@@ -874,7 +867,7 @@ class VWorldModel(nn.Module):
         num_obs_init = obs_0['visual'].shape[1]
         act_0 = act[:, :num_obs_init]
         action = act[:, num_obs_init:]
-        
+
         # Initial encoding
         z_obses_init = None
         if not self.bypass_dinov2 or not self.training:
@@ -888,62 +881,96 @@ class VWorldModel(nn.Module):
             z_bisim = self.encode_bisim({"visual": visuals, "proprio": obs_0.get("proprio", None)})
         else:
             z_bisim = self.encode_bisim(z_obses_init)
-        
+
         # Initialize action history with initial actions
         action_history = act_0  # (b, num_obs_init, action_dim)
-        
+
+        # Initialize proprio history
+        proprio_history = None
+        if 'proprio' in obs_0 and obs_0['proprio'] is not None:
+            proprio_history = obs_0['proprio'][:, :num_obs_init]  # (b, num_obs_init, proprio_dim)
+
         # Rollout using ViT predictor (sequence modeling)
-        
+
         t = 0
         inc = 1
         while t < action.shape[1]:
             # Update action history with current action
             current_action = action[:, t: t + inc, :]
             action_history = torch.cat([action_history, current_action], dim=1)
-            
+
             # Get the last num_hist actions for prediction
             if action_history.shape[1] >= self.num_hist:
                 hist_actions = action_history[:, -self.num_hist:]
             else:
                 # Pad with zeros at the beginning if we don't have enough history
                 pad_size = self.num_hist - action_history.shape[1]
-                padding = torch.zeros(action_history.shape[0], pad_size, action_history.shape[2], 
-                                    device=action_history.device)
+                padding = torch.zeros(action_history.shape[0], pad_size, action_history.shape[2],
+                                      device=action_history.device)
                 hist_actions = torch.cat([padding, action_history], dim=1)
-            
+
             action_emb = self.encode_act(hist_actions)
-            
+
+            # get proprio history for prediction
+            if proprio_history is not None:
+                if proprio_history.shape[1] >= self.num_hist:
+                    hist_proprio = proprio_history[:, -self.num_hist:]
+                else:
+                    pad_size = self.num_hist - proprio_history.shape[1]
+                    padding = torch.zeros(proprio_history.shape[0], pad_size, proprio_history.shape[2],
+                                          device=proprio_history.device)
+                    hist_proprio = torch.cat([padding, proprio_history], dim=1)
+                proprio_emb = self.encode_proprio(hist_proprio)
+            else:
+                # dummy
+                proprio_emb = torch.zeros(action_emb.shape[0], action_emb.shape[1], self.proprio_emb_dim,
+                                          device=action_emb.device)
+
             # Get state history for prediction
             if z_bisim.shape[1] >= self.num_hist:
                 z_bisim_hist = z_bisim[:, -self.num_hist:]
             else:
                 # Pad with zeros at the beginning if we don't have enough history
                 pad_size = self.num_hist - z_bisim.shape[1]
-                padding = torch.zeros(z_bisim.shape[0], pad_size, z_bisim.shape[2], 
-                                    device=z_bisim.device)
+                # (b, t, num_patches, patch_dim)
+                padding = torch.zeros(z_bisim.shape[0], pad_size, z_bisim.shape[2], z_bisim.shape[3], device=z_bisim.device)
                 z_bisim_hist = torch.cat([padding, z_bisim], dim=1)
-            
+
             # Predict next bisim state using ViT
-            z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb)
+            z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb, proprio_emb)
             z_bisim_new = z_bisim_pred[:, -inc:, ...]
-            
+
             # Concatenate to trajectory
             z_bisim = torch.cat([z_bisim, z_bisim_new], dim=1)
+
+            # Update proprio history
+            if proprio_history is not None:
+                last_proprio = proprio_history[:, -1:, :].expand(-1, inc, -1)
+                proprio_history = torch.cat([proprio_history, last_proprio], dim=1)
+
             t += inc
-        
+
         # Final prediction without action
         zero_action = torch.zeros_like(action[:, :1, :])
         action_history = torch.cat([action_history, zero_action], dim=1)
         final_actions = action_history[:, -self.num_hist:]
         action_emb = self.encode_act(final_actions)
-        
+
+        # Get final proprio
+        if proprio_history is not None:
+            final_proprio = proprio_history[:, -self.num_hist:]
+            proprio_emb = self.encode_proprio(final_proprio)
+        else:
+            proprio_emb = torch.zeros(action_emb.shape[0], action_emb.shape[1], self.proprio_emb_dim,
+                                      device=action_emb.device)
+
         # Get final state history
         z_bisim_hist = z_bisim[:, -self.num_hist:]
-        z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb)
+        z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb, proprio_emb)
         z_bisim_new = z_bisim_pred[:, -1:, ...]
         z_bisim = torch.cat([z_bisim, z_bisim_new], dim=1)
-        
-        # NOTE: this doesn't affect the training, we can worry about this later 
+
+        # NOTE: this doesn't affect the training, we can worry about this later
         # For compatibility, we need to return z_obses in DINOv2 space
         # We'll keep the initial encoding and pad with zeros or decode from bisim
         # For now, return a dummy z_obses with correct shape
@@ -952,7 +979,8 @@ class VWorldModel(nn.Module):
         device = z_bisim.device
         if z_obses_init is not None:
             dummy_z_obses = {
-                "visual": torch.zeros(b, t_total, z_obses_init["visual"].shape[2], z_obses_init["visual"].shape[3], device=device),
+                "visual": torch.zeros(b, t_total, z_obses_init["visual"].shape[2], z_obses_init["visual"].shape[3],
+                                      device=device),
                 "proprio": torch.zeros(b, t_total, z_obses_init["proprio"].shape[2], device=device)
             }
             # Copy initial observations
@@ -964,99 +992,5 @@ class VWorldModel(nn.Module):
                 "visual": torch.zeros(b, t_total, 0, 0, device=device),
                 "proprio": torch.zeros(b, t_total, 0, device=device)
             }
-        
-        return dummy_z_obses, z_dino, z_bisim
-    
-    def rollout_bisim(self, obs_0, act):
-        """
-        Rollout in bisimulation space
-        input:  obs_0 (dict): (b, n, 3, img_size, img_size)
-                act: (b, t+n, action_dim)
-        output: embeddings of rollout obs, z for compatibility, z_bisim trajectory
-        """
-        num_obs_init = obs_0['visual'].shape[1]
-        act_0 = act[:, :num_obs_init]
-        action = act[:, num_obs_init:]
-        
-        # Initial encoding to DINOv2 then to bisim
-        z_dino = self.encode(obs_0, act_0)
-        z_obses_init, _ = self.separate_emb(z_dino)
-        # For bypass mode, encode_bisim expects raw visuals; otherwise DINO tokens
-        if self.bypass_dinov2:
-            visuals = obs_0["visual"]
-            if visuals.ndim == 4:
-                visuals = visuals.unsqueeze(0)
-            z_bisim = self.encode_bisim({"visual": visuals, "proprio": obs_0.get("proprio", None)})
-        else:
-            z_bisim = self.encode_bisim(z_obses_init)
-        
-        # Initialize action history with initial actions
-        action_history = act_0  # (b, num_obs_init, action_dim)
-        
-        # Rollout using ViT predictor (sequence modeling)
-        
-        t = 0
-        inc = 1
-        while t < action.shape[1]:
-            # Update action history with current action
-            current_action = action[:, t: t + inc, :]
-            action_history = torch.cat([action_history, current_action], dim=1)
-            
-            # Get the last num_hist actions for prediction
-            if action_history.shape[1] >= self.num_hist:
-                hist_actions = action_history[:, -self.num_hist:]
-            else:
-                # Pad with zeros at the beginning if we don't have enough history
-                pad_size = self.num_hist - action_history.shape[1]
-                padding = torch.zeros(action_history.shape[0], pad_size, action_history.shape[2], 
-                                    device=action_history.device)
-                hist_actions = torch.cat([padding, action_history], dim=1)
-            
-            action_emb = self.encode_act(hist_actions)
-            
-            # Get state history for prediction
-            if z_bisim.shape[1] >= self.num_hist:
-                z_bisim_hist = z_bisim[:, -self.num_hist:]
-            else:
-                # Pad with zeros at the beginning if we don't have enough history
-                pad_size = self.num_hist - z_bisim.shape[1]
-                padding = torch.zeros(z_bisim.shape[0], pad_size, z_bisim.shape[2], 
-                                    device=z_bisim.device)
-                z_bisim_hist = torch.cat([padding, z_bisim], dim=1)
-            
-            # Predict next bisim state using ViT
-            z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb)
-            z_bisim_new = z_bisim_pred[:, -inc:, ...]
-            
-            # Concatenate to trajectory
-            z_bisim = torch.cat([z_bisim, z_bisim_new], dim=1)
-            t += inc
-        
-        # Final prediction without action
-        zero_action = torch.zeros_like(action[:, :1, :])
-        action_history = torch.cat([action_history, zero_action], dim=1)
-        final_actions = action_history[:, -self.num_hist:]
-        action_emb = self.encode_act(final_actions)
-        
-        # Get final state history
-        z_bisim_hist = z_bisim[:, -self.num_hist:]
-        z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb)
-        z_bisim_new = z_bisim_pred[:, -1:, ...]
-        z_bisim = torch.cat([z_bisim, z_bisim_new], dim=1)
-        
-        # NOTE: this doesn't affect the training, we can worry about this later 
-        # For compatibility, we need to return z_obses in DINOv2 space
-        # We'll keep the initial encoding and pad with zeros or decode from bisim
-        # For now, return a dummy z_obses with correct shape
-        b = obs_0['visual'].shape[0]
-        t_total = z_bisim.shape[1]
-        device = z_bisim.device
-        dummy_z_obses = {
-            "visual": torch.zeros(b, t_total, z_obses_init["visual"].shape[2], z_obses_init["visual"].shape[3], device=device),
-            "proprio": torch.zeros(b, t_total, z_obses_init["proprio"].shape[2], device=device)
-        }
-        # Copy initial observations
-        dummy_z_obses["visual"][:, :num_obs_init] = z_obses_init["visual"]
-        dummy_z_obses["proprio"][:, :num_obs_init] = z_obses_init["proprio"]
-        
+
         return dummy_z_obses, z_dino, z_bisim

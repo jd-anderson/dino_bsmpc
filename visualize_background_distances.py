@@ -40,9 +40,11 @@ MODEL_TITLES = {
     # "bisim_512_mb_1000_200": ("Bisim 512, epoch 25 mb 200", 25),
     # "mod1_bisim_1024_coef_1": "Bisim 1024; no memory buffer",
     # "mod1_bisim_5000_coef_1/21-59-56": "Bisim 5000; no memory buffer",
-    "jepa_512": "Bisim 512",
-    "jepa_512_vc_reg": "Bisim 512, VC Reg",
+    # "jepa_512": "Bisim 512",
+    "jepa_v5_8": ("Bisim 8, epoch 28", 28),
 }
+
+mean_pool_patches = False
 
 # background config
 BACKGROUNDS = {
@@ -331,6 +333,14 @@ def encode_observations(observations, model, device):
                     else:
                         z_obs = model.encode_obs(obs_dict)
                         z_bisim = model.encode_bisim(z_obs)
+
+                    if z_bisim.dim() == 4:  # (b, t, num_patches, patch_dim)
+                        if mean_pool_patches:
+                            z_bisim = z_bisim.mean(dim=2)  # Mean pool patches -> (b, t, patch_dim)
+                        else:
+                            # flatten patches -> (b, t, num_patches * patch_dim)
+                            z_bisim = z_bisim.view(z_bisim.size(0), z_bisim.size(1), -1)
+
                     bisim_emb = z_bisim.squeeze().cpu().numpy()
 
                 encodings[bg_name] = {
@@ -449,7 +459,8 @@ def create_visualization(all_encodings, model_names, model_titles):
     """Create one figure per model with two subplots: left=DINOv2, right=Bisim.
     Colors = states, Markers = backgrounds.
     """
-    color_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', ['red', 'blue', 'green', 'purple', 'orange', 'brown'])
+    color_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color',
+                                                               ['red', 'blue', 'green', 'purple', 'orange', 'brown'])
     background_order = list(BACKGROUNDS.keys())
     default_markers = ['o', 's', '^', 'D', 'P', 'X']
     bg_marker_map = {bg: default_markers[i % len(default_markers)] for i, bg in enumerate(background_order)}
@@ -501,12 +512,14 @@ def create_visualization(all_encodings, model_names, model_titles):
             else:
                 spread = 1.0
             jitter_r = 0.01 * spread if spread > 0 else 1e-3
+
             # deterministic offsets per (state, background)
             def sb_offset(sid, bg):
                 idx = background_order.index(bg) if bg in background_order else 0
                 code = (sid * 131 + idx * 17) % 360
                 angle = 2 * np.pi * (code / 360.0)
                 return np.array([np.cos(angle), np.sin(angle)]) * jitter_r
+
             for pt, sid, bg in zip(X2, dino_states, dino_bgs):
                 off = sb_offset(sid, bg)
                 ax_dino.scatter(pt[0] + off[0], pt[1] + off[1],
@@ -530,11 +543,13 @@ def create_visualization(all_encodings, model_names, model_titles):
             else:
                 spread = 1.0
             jitter_r = 0.01 * spread if spread > 0 else 1e-3
+
             def sb_offset(sid, bg):
                 idx = background_order.index(bg) if bg in background_order else 0
                 code = (sid * 131 + idx * 17) % 360
                 angle = 2 * np.pi * (code / 360.0)
                 return np.array([np.cos(angle), np.sin(angle)]) * jitter_r
+
             for pt, sid, bg in zip(X2, bisim_states, bisim_bgs):
                 off = sb_offset(sid, bg)
                 ax_bisim.scatter(pt[0] + off[0], pt[1] + off[1],
@@ -559,18 +574,22 @@ def create_visualization(all_encodings, model_names, model_titles):
             unique_bgs_leg = []
             state_to_color_leg = {}
 
-        state_handles = [plt.Line2D([], [], color=state_to_color_leg[sid], marker='o', linestyle='', label=f'State {sid}') for sid in unique_states_leg]
+        state_handles = [
+            plt.Line2D([], [], color=state_to_color_leg[sid], marker='o', linestyle='', label=f'State {sid}') for sid in
+            unique_states_leg]
         bg_to_marker_leg = {bg: bg_marker_map.get(bg, 'o') for bg in unique_bgs_leg}
         # legend label: use BACKGROUNDS title if available, else bg key
         bg_handles = [plt.Line2D([], [], color='gray', marker=bg_to_marker_leg[bg], linestyle='',
-                                  label=BACKGROUNDS.get(bg, {'title': bg}).get('title', bg)) for bg in unique_bgs_leg]
+                                 label=BACKGROUNDS.get(bg, {'title': bg}).get('title', bg)) for bg in unique_bgs_leg]
 
         if state_handles:
             anchor_x = 0.3 if has_dino else 0.25
-            fig.legend(handles=state_handles, title='States', loc='lower center', bbox_to_anchor=(anchor_x, -0.02), ncol=min(len(state_handles), 6))
+            fig.legend(handles=state_handles, title='States', loc='lower center', bbox_to_anchor=(anchor_x, -0.02),
+                       ncol=min(len(state_handles), 6))
         if bg_handles:
             anchor_x = 0.75 if has_dino else 0.75
-            fig.legend(handles=bg_handles, title='Backgrounds', loc='lower center', bbox_to_anchor=(anchor_x, -0.02), ncol=min(len(bg_handles), 6))
+            fig.legend(handles=bg_handles, title='Backgrounds', loc='lower center', bbox_to_anchor=(anchor_x, -0.02),
+                       ncol=min(len(bg_handles), 6))
 
         figs.append(fig)
 
