@@ -13,6 +13,30 @@ def build_mlp(input_dim, hidden_dim, output_dim, num_hidden_layers):
     return nn.Sequential(*layers)
 
 
+def build_patch_encoder(input_dim, hidden_dim, output_dim, num_hidden_layers=1):
+    """Build a small MLP for processing patches or blocks"""
+    layers = [nn.Linear(input_dim, hidden_dim), nn.GELU()]
+    for _ in range(num_hidden_layers - 1):
+        layers += [nn.Linear(hidden_dim, hidden_dim), nn.GELU()]
+    layers += [nn.Linear(hidden_dim, output_dim)]
+    return nn.Sequential(*layers)
+
+
+class ResBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.GELU(),
+            nn.Linear(dim, dim),
+            nn.GELU(),
+            nn.Linear(dim, dim),
+        )
+
+    def forward(self, x):
+        return x + self.block(x)
+
+
 class BisimModel(nn.Module):
     def __init__(
         self,
@@ -23,6 +47,8 @@ class BisimModel(nn.Module):
         action_dim=10,
         bypass_dinov2=False,
         img_size=224,
+        num_patches=196,  # number of output patches
+        patch_emb_dim=384,  # DINOv2 patch embedding dimension
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -31,37 +57,55 @@ class BisimModel(nn.Module):
         self.action_dim = action_dim
         self.bypass_dinov2 = bypass_dinov2
         self.img_size = img_size
-        
+        self.num_patches = num_patches
+        self.patch_dim = latent_dim
+        self.patch_emb_dim = patch_emb_dim
+
+        # check if we should use patch processing
+        self.use_patch_processing = not bypass_dinov2
+
         if bypass_dinov2:
-            # Direct encoding: raw observations (3 * img_size * img_size) -> bisim
+            # direct encoding: raw observations -> bisim
             actual_input_dim = 3 * img_size * img_size
+            self.encoder = build_mlp(actual_input_dim, hidden_dim, latent_dim, num_hidden_layers)
+        elif self.use_patch_processing:
+            # 384 -> 128 -> ResBlock(128) -> 64
+            middle_dim = 2 * self.patch_dim
+            self.encoder = nn.Sequential(
+                nn.Linear(patch_emb_dim, middle_dim),
+                ResBlock(middle_dim),
+                nn.Linear(middle_dim, self.patch_dim),
+            )
+
+            # spatial positional embedding for output patches
+            self.spatial_pos_emb = nn.Parameter(torch.randn(num_patches, self.patch_dim))
+
+            # layer norm after projection
+            self.proj_norm = nn.LayerNorm(self.patch_dim)
         else:
-            # DinoV2 encoding: DinoV2 embeddings (patches * embed_dim) -> bisim
+            # legacy: flatten all patches
             actual_input_dim = input_dim
-            
-        self.encoder = build_mlp(actual_input_dim, hidden_dim, latent_dim, num_hidden_layers)
-        
-        # Reward predictor
-        self.reward = build_mlp(
-            latent_dim + action_dim,  # latent state + action embedding
-            hidden_dim,
-            1,
-            num_hidden_layers=1,
-        )
-        
+            self.encoder = build_mlp(actual_input_dim, hidden_dim, latent_dim, num_hidden_layers)
+
+        reward_hidden_dim = (self.patch_dim + self.action_dim) * 2
+        self.reward = build_mlp(self.patch_dim + self.action_dim, reward_hidden_dim, 1, num_hidden_layers=1)
+
+        # aggregator: per-patch score -> softmax weights
+        self.reward_aggregator = nn.Linear(self.patch_dim, 1)
+
         # Initialize weights
         self._initialize_weights()
 
         self.PCAMatrix = []
         self.PCA_Calced = False
-    
+
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-    
+
     def log_bisim(self, data):
         """Log bisimulation model details"""
         # Convert data to JSON-serializable format
@@ -105,39 +149,61 @@ class BisimModel(nn.Module):
                         serializable_data[key][k] = v
             else:
                 serializable_data[key] = value
-        
+
         log_entry = {
             "timestamp": np.datetime64('now').astype(str),
             **serializable_data
         }
         with open("bisim_log.json", "a") as f:
             f.write(json.dumps(log_entry) + "\n")
-    
+
     def encode(self, input_data):
         """
         Maps input to bisimulation embeddings
-        input: 
+        input:
         - If bypass_dinov2=False: z_dino: (b, t, p, d) - DinoV2 embeddings
         - If bypass_dinov2=True: obs: (b, t, 3, img_size, img_size) - Raw observations
-        output: z_bisim: (b, t, bisim_dim)
+        output: z_bisim: (b, t, num_patches, patch_dim)
         """
         if self.bypass_dinov2:
             b, t, c, h, w = input_data.shape
             input_flat = input_data.reshape(b * t, c * h * w)
+            z_bisim = self.encoder(input_flat)  # (b*t, latent_dim)
+            z_bisim = z_bisim.reshape(b, t, self.latent_dim)
+            # (b, t, latent_dim) -> (b, t, num_patches, patch_dim)
+            z_bisim = z_bisim.unsqueeze(2).expand(b, t, self.num_patches, self.patch_dim)
+            event = "bisim_encode_direct"
+
+        elif self.use_patch_processing:
+            # apply per-token encoding: 384 -> patch_dim
+            z_bisim = self.encoder(input_data)  # (b, t, 196, patch_dim)
+
+            # add spatial positional embeddings
+            z_bisim = z_bisim + self.spatial_pos_emb.unsqueeze(0).unsqueeze(0)  # broadcast over batch and time
+
+            # apply layer norm
+            z_bisim = self.proj_norm(z_bisim)
+
+            event = "bisim_encode_dinov2_patches"
+
         else:
+            # legacy: flatten all patches
             b, t, p, d = input_data.shape
             input_flat = input_data.reshape(b * t, p * d)
-        
-        z_bisim = self.encoder(input_flat)
-        z_bisim = z_bisim.reshape(b, t, self.latent_dim)
-        
+            z_bisim = self.encoder(input_flat)
+            z_bisim = z_bisim.reshape(b, t, self.latent_dim)
+            z_bisim = z_bisim.reshape(b, t, self.num_patches, self.patch_dim)
+            event = "bisim_encode_dinov2_flat_legacy"
+
         # Log encoding details
         self.log_bisim({
-            "event": "bisim_encode_direct" if self.bypass_dinov2 else "bisim_encode_dinov2",
+            "event": event,
             "input_shape": list(input_data.shape),
-            "input_flattened_shape": list(input_flat.shape),
             "output_shape": list(z_bisim.shape),
             "bypass_dinov2": self.bypass_dinov2,
+            "use_patch_processing": self.use_patch_processing,
+            "num_patches": self.num_patches,
+            "patch_dim": self.patch_dim,
             "input_stats": {
                 "mean": float(input_data.mean().item()),
                 "std": float(input_data.std().item()),
@@ -151,104 +217,143 @@ class BisimModel(nn.Module):
                 "max": float(z_bisim.max().item()),
             },
         })
-        
+
         return z_bisim
-    
 
     def predict_reward(self, z_bisim, action_emb):
         """
         Predicts reward from bisimulation state and action
-        input: z_bisim: (b, bisim_dim)
-               action_emb: (b, action_emb_dim)
-        output: reward: (b, 1)
+        z_bisim: (b, p, d) or (b, t, p, d) where d == self.patch_dim
+        action_emb: (b, a) or (b, t, a)
+        returns: (b, 1) or (b, t, 1)
         """
-        # print(f"DEBUG - BisimModel.predict_reward input dimensions: z_bisim {z_bisim.shape}, action_emb {action_emb.shape}")
-        x = torch.cat([z_bisim, action_emb], dim=-1)
-        # print(f"DEBUG - BisimModel.predict_reward concatenated input: {x.shape}")
-        return self.reward(x)
+        assert z_bisim.shape[-1] == self.patch_dim, \
+            f"z_bisim last dim {z_bisim.shape[-1]} must equal patch_dim {self.patch_dim}"
+
+        if z_bisim.dim() == 4:
+            b, t, p, d = z_bisim.shape
+            z2 = z_bisim.reshape(b * t, p, d)  # (bt, p, d)
+            scores = self.reward_aggregator(z2)  # (bt, p, 1)
+            weights = torch.softmax(scores, dim=1)  # (bt, p, 1)
+            z_agg = (z2 * weights).sum(dim=1)  # (bt, d)
+            # action handling
+            if action_emb is None:
+                a = torch.zeros(b, t, self.action_dim, device=z_bisim.device, dtype=z_bisim.dtype)
+            else:
+                a = action_emb
+            if a.dim() == 2:  # (b, a) -> (b, t, a)
+                a = a.unsqueeze(1).expand(b, t, -1)
+            a = a.reshape(b * t, -1)  # (bt, a)
+            x = torch.cat([z_agg, a], dim=-1)  # (bt, d+a)
+            out = self.reward(x).reshape(b, t, 1)  # (b, t, 1)
+            return out
+
+        elif z_bisim.dim() == 3:
+            b, p, d = z_bisim.shape
+            scores = self.reward_aggregator(z_bisim)  # (b, p, 1)
+            weights = torch.softmax(scores, dim=1)  # (b, p, 1)
+            z_agg = (z_bisim * weights).sum(dim=1)  # (b, d)
+            # action handling
+            if action_emb is None:
+                a = torch.zeros(b, self.action_dim, device=z_bisim.device, dtype=z_bisim.dtype)
+            else:
+                a = action_emb
+            if a.dim() == 3:  # (b, t, a) -> (b, a) not allowed here
+                raise ValueError("predict_reward got (b,p,d) states but (b,t,a) actions.")
+            x = torch.cat([z_agg, a], dim=-1)  # (b, d+a)
+            out = self.reward(x)  # (b, 1)
+            return out
+
+        else:
+            raise ValueError(f"z_bisim must be (b,p,d) or (b,t,p,d), got {z_bisim.shape}")
 
     def compute_transition_distance(self, next_z_bisim, next_z_bisim2):
         """
-        Compute distance between next state distributions for bisimulation metric.
-        Uses L2 distance between predicted next states averaged over time.
-
-        Args:
-            next_z_bisim: (batch_size, time_steps, bisim_dim) tensor
-            next_z_bisim2: (batch_size, time_steps, bisim_dim) tensor
-
-        Returns:
-            distance: (batch_size,) tensor of transition distances
+        Per-sequence transition distance.
+        next_z_bisim:  (b, t, p, d)
+        next_z_bisim2: (b, t, p, d)
+        Returns: (b,) transition distance
         """
-        # Compute L2 distance between next state predictions
-        # Average over time dimension to get distance per batch element
-        diff = next_z_bisim - next_z_bisim2  # (batch_size, time_steps, bisim_dim)
-        squared_diff = diff.pow(2).sum(dim=-1)  # (batch_size, time_steps)
-        distances = squared_diff.mean(dim=-1)  # (batch_size,) - average over time
-        
-        # Take square root to get L2 distance
-        distances = torch.sqrt(distances + 1e-8)  # Add epsilon for numerical stability
-        
+        b, t, p, d = next_z_bisim.shape
+        z1_flat = next_z_bisim.reshape(b, t, p * d)  # (b, t, D)
+        z2_flat = next_z_bisim2.reshape(b, t, p * d)  # (b, t, D)
+
+        diff = z1_flat - z2_flat  # (b, t, D)
+        squared_diff = diff.pow(2).sum(dim=-1)  # (b, t)
+        distances = squared_diff.mean(dim=-1)  # (b,)  # average over time
+        distances = torch.sqrt(distances + 1e-8)  # (b,)
         return distances
 
-    def compute_covariance_regularization(self, z_bisim, next_z_bisim):
+    def compute_covariance_regularization(self, z_bisim, next_z_bisim,
+                                          var_target: float = 1.0,
+                                          eps: float = 1e-6):
         """
-        Compute covariance regularization for bisimulation embeddings.
-        Encourages diverse and structured representations.
-        
+        Covariance regularization.
+        Operates on flattened bisim encodings (p * d) features per sample
         Args:
-            z_bisim: (batch_size, time_steps, bisim_dim) current states
-            next_z_bisim: (batch_size, time_steps, bisim_dim) next states
-            
+            z_bisim:        (b, t, p, d)
+            next_z_bisim:   (b, t, p, d)
+            var_target:     target variance for diagonal
+            eps:            numerical stability
+            offdiag_coef:   weight for off-diagonal penalty
+            diag_coef:      weight for diagonal target penalty
+
         Returns:
-            cov_reg: (batch_size,) tensor of covariance regularization loss
+            cov_reg: (b,) tensor broadcast per batch element
         """
-        batch_size, time_steps, bisim_dim = z_bisim.shape
-        
-        # Combine current and next states for covariance computation
-        combined_states = torch.cat([z_bisim, next_z_bisim], dim=0)  # (2*batch_size, time_steps, bisim_dim)
-        
-        # Reshape to treat each time step as a separate sample
-        # (2*batch_size * time_steps, bisim_dim)
-        states_flat = combined_states.reshape(-1, bisim_dim)
-        
-        # Center the data
-        states_centered = states_flat - states_flat.mean(dim=0, keepdim=True)
-        
-        # Compute covariance matrix: (bisim_dim, bisim_dim)
-        n_samples = states_centered.shape[0]
-        cov_matrix = torch.mm(states_centered.t(), states_centered) / (n_samples - 1)
-        
-        # Add small epsilon for numerical stability
-        epsilon = 1e-6
-        cov_matrix = cov_matrix + epsilon * torch.eye(bisim_dim, device=cov_matrix.device)
-        
-        # Compute covariance regularization loss
-        # Encourage off-diagonal elements to be small (decorrelation)
-        off_diag_mask = ~torch.eye(bisim_dim, dtype=torch.bool, device=cov_matrix.device)
-        off_diag_loss = cov_matrix[off_diag_mask].pow(2).mean()
-        
-        # Encourage diagonal elements to be close to target variance
-        diag_elements = torch.diag(cov_matrix)
-        var_target = 1.0
-        diag_loss = (diag_elements - var_target).pow(2).mean()
-        
-        # Total covariance regularization
-        cov_reg = off_diag_loss + diag_loss
-        
-        # Return per-batch element (broadcast to match batch size)
-        return cov_reg.expand(batch_size)
+        assert z_bisim.dim() == 4 and next_z_bisim.dim() == 4, \
+            f"expected (b,t,p,d); got {z_bisim.shape} and {next_z_bisim.shape}"
+
+        b, t, p, d = z_bisim.shape
+        feature_dim = p * d
+
+        # (b, t, p, d) -> (b, t, p*d)
+        z_flat = z_bisim.reshape(b, t, feature_dim)
+        next_z_flat = next_z_bisim.reshape(b, t, feature_dim)
+
+        # stack current and next along batch axis, then flatten batch and time
+        # (2*b, t, p*d) -> (2*b*t, p*d)
+        Z = torch.cat([z_flat, next_z_flat], dim=0).reshape(-1, feature_dim)
+
+        # center the data
+        Zc = Z - Z.mean(dim=0, keepdim=True)
+
+        # compute covariance matrix (feature_dim × feature_dim)
+        N = Zc.shape[0]
+        denom = max(N - 1, 1)
+        C = (Zc.T @ Zc) / denom
+        C = C + eps * torch.eye(feature_dim, device=C.device, dtype=C.dtype)
+
+        # loss terms
+        diag = torch.diag(C)  # (feature_dim,)
+        diag_loss = (diag - var_target).pow(2).mean()
+
+        # Off-diagonal penalty: ||C||_F^2 - ||diag(C)||_2^2, normalized by count
+        frob2 = (C * C).sum()
+        diag2 = (diag * diag).sum()
+        offdiag_sum = frob2 - diag2
+        offdiag_norm = feature_dim * (feature_dim - 1)
+        offdiag_loss = offdiag_sum / max(offdiag_norm, 1)
+
+        cov_reg = offdiag_loss + diag_loss
+
+        # Return per-batch scalar (broadcast) to match your loss plumbing
+        return cov_reg.expand(b)
 
     def var_loss(self, z_bisim, var_target=0.1, epsilon=0):
         """
         Calculate variance loss (core)
-        input: z_bisim: (b, t, bisim_dim)
+        input: z_bisim: (b, t, num_patches, patch_dim)
         var_target: variance parameter
         epsilon: variance parameter
         output: var_loss: (t)
         """
+        # (b, t, num_patches, patch_dim) -> (b, t, num_patches*patch_dim)
+        b, t, num_patches, patch_dim = z_bisim.shape
+        z_flat = z_bisim.reshape(b, t, num_patches * patch_dim)
 
         # Compute variance
-        var = z_bisim.var(dim=0)  # (T,D)
+        var = z_flat.var(dim=0)  # (t, num_patches*patch_dim)
 
         # Compute sqrt(var + epsilon)
         std = torch.sqrt(var + epsilon)
@@ -263,18 +368,20 @@ class BisimModel(nn.Module):
         # Compute max(0, var_target - std)
         loss = torch.relu(var_target - std)
 
-        return loss.mean(dim=1)  # reduce the dimension to (T)
+        return loss.mean(dim=1)  # reduce the dimension to (t)
 
     def cal_pca(self, z_bisim):
-        B, T, D = z_bisim.shape
-        Z = z_bisim.reshape(B * T, D)
+        # (B, T, num_patches, patch_dim) -> (B*T, num_patches*patch_dim)
+        B, T, n_patches, patch_dim = z_bisim.shape
+        z_flat = z_bisim.reshape(B, T, n_patches * patch_dim)
+        Z = z_flat.reshape(B * T, n_patches * patch_dim)
 
         # Center data
         Z_centered = Z - Z.mean(dim=0, keepdim=True)
 
         # PCA via SVD
         U, S, Vt = torch.linalg.svd(Z_centered, full_matrices=False) # check  Vt or V
-        V = Vt.T  # (D, D)
+        V = Vt.T  # (n_patches*patch_dim, n_patches*patch_dim)
 
         self.PCAMatrix = V.detach()
         self.PCA_Calced = True
@@ -287,15 +394,17 @@ class BisimModel(nn.Module):
         - Remaining PCs are unconstrained
 
         Args:
-            z_bisim: Tensor (B, T, D)
+            z_bisim: Tensor (B, T, num_patches, patch_dim)
             target_first: variance target for the first PC
             target_rest: variance target for PCs 2..num_pcs
             num_pcs: number of PCs to regularize
         Returns:
             scalar loss
         """
-        B, T, D = z_bisim.shape
-        Z = z_bisim.reshape(B * T, D)
+        # (B, T, num_patches, patch_dim) -> (B*T, num_patches*patch_dim)
+        B, T, n_patches, patch_dim = z_bisim.shape
+        z_flat = z_bisim.reshape(B, T, n_patches * patch_dim)
+        Z = z_flat.reshape(B * T, n_patches * patch_dim)
 
         # Center data
         Z_centered = Z - Z.mean(dim=0, keepdim=True)
@@ -304,16 +413,15 @@ class BisimModel(nn.Module):
             self.cal_pca(z_bisim)
         V = self.PCAMatrix
         num_pcs = min(num_pcs, V.shape[1])
-        V_10 = V[:, :num_pcs]  # (D, num_pcs)
+        V_10 = V[:, :num_pcs]  # (n_patches*patch_dim, num_pcs)
 
         # Project to PCA coords
-        Z_proj = Z_centered @ V_10  # (num_pcs)
+        Z_proj = Z_centered @ V_10  # (B*T, num_pcs)
         var_V10 = torch.zeros(num_pcs, device=Z_proj.device)
 
         # print(Z_proj)
         for i in range(num_pcs):
             var_V10[i] = Z_proj[:, i].var(unbiased=True)
-
 
         # Build targets
         targets = torch.full_like(var_V10, target_rest)
@@ -329,8 +437,8 @@ class BisimModel(nn.Module):
 
         """
         Calculate variance loss with memory buffer
-        input: z_bisim: (b, t, bisim_dim)
-        next_z_bisim: (b, t, bisim_dim)
+        input: z_bisim: (b, t, num_patches, patch_dim)
+        next_z_bisim: (b, t, num_patches, patch_dim)
         var_target: variance parameter
         epsilon: variance parameter
         output: var_loss: (t)
@@ -343,15 +451,16 @@ class BisimModel(nn.Module):
         #loss = self.pca_var_loss(T_Plus_1_z_bisim, target_first, var_target, num_pcs)
 
         return loss  # dimension=(T+1), or memory sample+1
-    
-    def calc_PCAVar_loss(self, z_bisim, next_z_bisim, target_first= 0.01, var_target=0.1, num_pcs=10):
+
+    def calc_PCAVar_loss(self, z_bisim, next_z_bisim, target_first=0.01, var_target=0.1, num_pcs=10):
 
         """
-        Calculate variance loss with memory buffer
-        input: z_bisim: (b, t, bisim_dim)
-        next_z_bisim: (b, t, bisim_dim)
-        var_target: variance parameter
-        epsilon: variance parameter
+        Calculate PCA variance loss with memory buffer
+        input: z_bisim: (b, t, num_patches, patch_dim)
+        next_z_bisim: (b, t, num_patches, patch_dim)
+        target_first: target variance for first PC
+        var_target: target variance for other PCs
+        num_pcs: number of principal components to regularize
         output: var_loss: (t)
         """
 
@@ -369,28 +478,23 @@ class BisimModel(nn.Module):
         """
         Calculate bisimulation loss
         bisimulation metric: d(s1,s2) = |r(s1) - r(s2)| + γ · d(P(s1), P(s2)) + Variance Loss + Covariance Regularization
-        input: z_bisim, z_bisim2: (b, t, bisim_dim) or (b, bisim_dim)
-               reward, reward2: (b, t, 1) or (b, 1)
-               next_z_bisim, next_z_bisim2: (b, t, bisim_dim) or (b, bisim_dim)
-        output: bisim_loss: (b, t) or (b,)
-        bisimulation metric: d(s1,s2) = |r(s1) - r(s2)| + γ · d(P(s1), P(s2)) + Variance Loss + Covariance Regularization
-        input: z_bisim, z_bisim2: (b, t, bisim_dim) or (b, bisim_dim)
-               reward, reward2: (b, t, 1) or (b, 1)
-               next_z_bisim, next_z_bisim2: (b, t, bisim_dim) or (b, bisim_dim)
-        output: bisim_loss: (b, t) or (b,)
+        input: z_bisim, z_bisim2: (b, t, num_patches, patch_dim)
+               reward, reward2: (b, t, 1)
+               next_z_bisim, next_z_bisim2: (b, t, num_patches, patch_dim)
+        output: bisim_loss: (b, t)
         """
-        # print(f"BISIM LOSS CALC: State dim={z_bisim.shape[-1]}, calculating bisimilarity metric")
-        # print(f"BISIM LOSS CALC: z_bisim={z_bisim.shape}, next_z_bisim={next_z_bisim.shape}")
+        # Compute L2 distance per (b, t) by reducing over patches and patch_dim
+        b, t, p, d = z_bisim.shape
+        z1_flat = z_bisim.reshape(b, t, p * d)  # (b, t, D)
+        z2_flat = z_bisim2.reshape(b, t, p * d)  # (b, t, D)
 
-
-        # Compute distance between current states
-        z_dist = torch.sum(F.smooth_l1_loss(z_bisim, z_bisim2, reduction="none"), dim=-1)
+        z_dist = F.smooth_l1_loss(z1_flat, z2_flat, reduction="none").sum(dim=-1)
 
         # Compute distance between rewards
         r_dist = torch.sum(F.smooth_l1_loss(reward, reward2, reduction="none"), dim=-1)
 
         # Compute transition distance between next states
-        transition_dist = self.compute_transition_distance(next_z_bisim, next_z_bisim2)
+        transition_dist = self.compute_transition_distance(next_z_bisim, next_z_bisim2)  # (b,)
 
         # Check for NaN or Inf in transition_dist
         if torch.isnan(transition_dist).any() or torch.isinf(transition_dist).any():
@@ -401,8 +505,7 @@ class BisimModel(nn.Module):
             # Replace with safe values
             transition_dist = torch.ones_like(transition_dist)
 
-        # Expand transition_dist to match time dimension of r_dist
-        # transition_dist: (b,) -> (b, t) by repeating for each time step
+        # Expand to match time dimension of r_dist
         transition_dist = transition_dist.unsqueeze(1).expand(-1, r_dist.shape[1])  # (b, t)
 
         # Compute variance loss
