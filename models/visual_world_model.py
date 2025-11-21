@@ -319,8 +319,12 @@ class VWorldModel(nn.Module):
         z_pred = rearrange(z_pred, "b (t p) d -> b t p d", t=t, p=n_patches)
 
         z_bisim_next = z_pred[:, :, :, :patch_dim]  # (b, t, n_patches, patch_dim)
+        start_idx = patch_dim
+        end_idx = start_idx + self.action_emb_dim
+        z_proprio_next = z_pred[:, :, :, end_idx:end_idx + self.proprio_emb_dim]  # (b, t, n_patches, proprio_dim)
+        z_proprio_next = z_proprio_next.mean(dim=2)
 
-        return z_bisim_next
+        return z_bisim_next, z_proprio_next
 
     def decode(self, z):
         """
@@ -603,6 +607,13 @@ class VWorldModel(nn.Module):
             z_src = z[:, : self.num_hist, :, :]  # (b, num_hist, num_patches, dim)
             z_tgt = z[:, self.num_pred:, :, :]  # (b, num_hist, num_patches, dim)
 
+        device = (
+            z_src.device
+            if z_src is not None
+            else (obs['proprio'].device if isinstance(obs['proprio'], torch.Tensor) else next(self.parameters()).device)
+        )
+        z_proprio_loss = torch.tensor(0.0, device=device)
+
         # Process embeddings with bisimulation if available
         if self.has_bisim:
             if self.bypass_dinov2:
@@ -634,7 +645,7 @@ class VWorldModel(nn.Module):
                 # dummy
                 proprio_emb = torch.zeros(action_emb.shape[0], action_emb.shape[1], self.proprio_emb_dim,
                                           device=action_emb.device)
-            next_z_bisim_src = self.predict_bisim(z_bisim_src, action_emb, proprio_emb)
+            next_z_bisim_src, z_proprio_pred = self.predict_bisim(z_bisim_src, action_emb, proprio_emb)
 
             # Standard loss in bisimulation space (L2 between predicted and GT next states)
             standard_l2_loss = self.emb_criterion(next_z_bisim_src, z_bisim_tgt)
@@ -648,11 +659,23 @@ class VWorldModel(nn.Module):
             bisim_loss = bisim_loss.mean()
             loss_components["bisim_loss"] = bisim_loss
             loss_components["standard_l2_loss"] = standard_l2_loss
+            loss_components["bisim_z_dist"] = z_dist
+            loss_components["bisim_r_dist"] = r_dist
+            loss_components["bisim_transition_dist"] = transition_dist
+            loss_components["bisim_var_loss"] = var_loss
+            loss_components["bisim_cov_reg"] = cov_reg
             loss = loss + standard_l2_loss + self.bisim_coef * bisim_loss
+
+            proprio_tgt = self.encode_proprio(obs['proprio'][:, self.num_pred:, ...])
+            bisim_proprio_loss = self.emb_criterion(
+                z_proprio_pred, proprio_tgt.detach()
+            )
+            loss = loss + bisim_proprio_loss
+            z_proprio_loss = bisim_proprio_loss
 
         visual_pred = None
         z_pred = None
-        if self.predictor is not None:
+        if self.predictor is not None and not self.has_bisim:
             z_pred = self.predict(z_src)
 
             if self.concat_dim == 0:
@@ -668,17 +691,7 @@ class VWorldModel(nn.Module):
                 z_proprio_loss = 0
 
             loss = loss + z_proprio_loss
-            loss_components["z_proprio_loss"] = z_proprio_loss
-            loss_components["bisim_z_dist"] = z_dist
-            loss_components["bisim_r_dist"] = r_dist
-            loss_components["bisim_transition_dist"] = transition_dist
-            loss_components["bisim_var_loss"] = var_loss
-            loss_components["bisim_cov_reg"] = cov_reg
-
-        # No dynamics training in DinoV2 space - all dynamics learning happens in bisimulation space
-        visual_pred = None
-        z_pred = None
-
+        loss_components["z_proprio_loss"] = z_proprio_loss
         if self.decoder is not None:
             obs_reconstructed, diff_reconstructed = self.decode(
                 z.detach()
@@ -937,7 +950,7 @@ class VWorldModel(nn.Module):
                 z_bisim_hist = torch.cat([padding, z_bisim], dim=1)
 
             # Predict next bisim state using ViT
-            z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb, proprio_emb)
+            z_bisim_pred, _ = self.predict_bisim(z_bisim_hist, action_emb, proprio_emb)
             z_bisim_new = z_bisim_pred[:, -inc:, ...]
 
             # Concatenate to trajectory
@@ -966,7 +979,7 @@ class VWorldModel(nn.Module):
 
         # Get final state history
         z_bisim_hist = z_bisim[:, -self.num_hist:]
-        z_bisim_pred = self.predict_bisim(z_bisim_hist, action_emb, proprio_emb)
+        z_bisim_pred, _ = self.predict_bisim(z_bisim_hist, action_emb, proprio_emb)
         z_bisim_new = z_bisim_pred[:, -1:, ...]
         z_bisim = torch.cat([z_bisim, z_bisim_new], dim=1)
 
