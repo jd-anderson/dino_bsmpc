@@ -82,6 +82,11 @@ class GDPlanner(BasePlanner):
             self.preprocessor.transform_obs(obs_g), self.device
         )
         z_obs_g = self.wm.encode_obs(trans_obs_g)
+        if hasattr(self.wm, 'has_bisim') and self.wm.has_bisim:
+            if not hasattr(self, '_bisim_goal_logged'):
+                print(f"[GD] Planning in bisimulation space (goal encoded, patch_dim={self.wm.bisim_patch_dim})")
+                self._bisim_goal_logged = True
+            z_obs_g["visual"] = self.wm.encode_bisim(z_obs_g)
         z_obs_g_detached = {key: value.detach() for key, value in z_obs_g.items()}
 
         actions = self.init_actions(obs_0, actions).to(self.device)
@@ -91,10 +96,11 @@ class GDPlanner(BasePlanner):
 
         for i in range(self.opt_steps):
             optimizer.zero_grad()
-            i_z_obses, i_zs = self.wm.rollout(
+            rollout_result = self.wm.rollout(
                 obs_0=trans_obs_0,
                 act=actions,
             )
+            i_z_obses, i_zs = rollout_result
             loss = self.objective_fn(i_z_obses, z_obs_g_detached)  # (n_evals, )
             total_loss = loss.mean() * n_evals  # loss for each eval is independent
             total_loss.backward()

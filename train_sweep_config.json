@@ -10,7 +10,7 @@
     "training.bisim_lr": 5e-6,
     "var_loss_coef": 1.0,
     "PCA1_loss_target": 0.0001,
-    "PCAloss_epoch": 50,
+    "PCAloss_epoch": 201,
     "num_pcs": 10,
     "VC_target": 1
   },

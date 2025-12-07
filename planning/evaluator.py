@@ -39,16 +39,7 @@ class PlanEvaluator:  # evaluator for planning
         self.preprocessor = preprocessor
         self.n_plot_samples = n_plot_samples
         self.device = next(wm.parameters()).device
-        self.plot_full = False  # whether to plot all frames or just keyframes
-        
-        # Check if world model has bisimulation capabilities
-        self.has_bisim = hasattr(wm, 'has_bisim') and wm.has_bisim
-        if self.has_bisim:
-            # print(f"EVALUATOR: Using world model with bisimulation (latent_dim={wm.bisim_latent_dim})")
-            pass
-        else:
-            # print("EVALUATOR: Using standard world model without bisimulation")
-            pass
+        self.plot_full = False  # plot all frames or frames after frameskip
 
     def assign_init_cond(self, obs_0, state_0):
         self.obs_0 = obs_0
@@ -110,17 +101,10 @@ class PlanEvaluator:  # evaluator for planning
             self.preprocessor.transform_obs(self.obs_g), self.device
         )
         with torch.no_grad():
-            # Handle both cases: with and without bisimulation
-            rollout_result = self.wm.rollout(
+            i_z_obses, _ = self.wm.rollout(
                 obs_0=trans_obs_0,
                 act=actions,
             )
-            # Check if the result includes bisimulation embeddings
-            if len(rollout_result) == 3:
-                i_z_obses, _, bisim_embeds = rollout_result  # Unpack and get bisimulation embeddings
-                # print(f"EVALUATOR: Rollout produced bisimulation embeddings with shape {bisim_embeds.shape}")
-            else:
-                i_z_obses, _ = rollout_result
         i_final_z_obs = self._get_trajdict_last(i_z_obses, action_len + 1)
 
         # rollout in env
@@ -144,7 +128,20 @@ class PlanEvaluator:  # evaluator for planning
 
         # plot trajs
         if self.wm.decoder is not None:
-            i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
+            if hasattr(self.wm, 'has_bisim') and self.wm.has_bisim:
+                with torch.no_grad():
+                    # temporarily disable bisimulation to get DINOv2 embeddings
+                    original_has_bisim = self.wm.has_bisim
+                    self.wm.has_bisim = False
+                    i_z_obses_dinov2, _ = self.wm.rollout(
+                        obs_0=trans_obs_0,
+                        act=actions,
+                    )
+                    self.wm.has_bisim = original_has_bisim  # Restore bisimulation flag
+                i_visuals = self.wm.decode_obs(i_z_obses_dinov2)[0]["visual"]
+            else:
+                # no bisimulation: use the regular rollout embeddings
+                i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
             i_visuals = self._mask_traj(
                 i_visuals, action_len + 1
             )  # we have action_len + 1 states
@@ -174,12 +171,10 @@ class PlanEvaluator:  # evaluator for planning
         successes = eval_results['success']
 
         logs = {
-            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(
-                value.astype(float))
+            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(value.astype(float))
             for key, value in eval_results.items()
         }
 
-        # Print success rate and evaluation results
         print("Success rate: ", logs['success_rate'])
         print(eval_results)
 
@@ -190,6 +185,8 @@ class PlanEvaluator:  # evaluator for planning
 
         e_obs = move_to_device(self.preprocessor.transform_obs(e_obs), self.device)
         e_z_obs = self.wm.encode_obs(e_obs)
+        if hasattr(self.wm, 'has_bisim') and self.wm.has_bisim:
+            e_z_obs["visual"] = self.wm.encode_bisim(e_z_obs)
         div_visual_emb = torch.norm(e_z_obs["visual"] - i_z_obs["visual"]).item()
         div_proprio_emb = torch.norm(e_z_obs["proprio"] - i_z_obs["proprio"]).item()
 
@@ -198,28 +195,6 @@ class PlanEvaluator:  # evaluator for planning
             "mean_proprio_dist": mean_proprio_dist,
             "mean_div_visual_emb": div_visual_emb,
             "mean_div_proprio_emb": div_proprio_emb,
-        })
-
-        # Add bisimulation metrics if available
-        if self.has_bisim:
-            # print("EVALUATOR: Computing bisimulation metrics for evaluation")
-            with torch.no_grad():
-                # Get bisimulation embeddings for predicted and goal states
-                e_bisim = self.wm.encode_bisim(e_z_obs)
-                i_bisim = self.wm.encode_bisim(i_z_obs)
-                goal_obs = move_to_device(self.preprocessor.transform_obs(self.obs_g), self.device)
-                goal_z_obs = self.wm.encode_obs(goal_obs)
-                goal_bisim = self.wm.encode_bisim(goal_z_obs)
-
-                # Calculate bisimulation distances
-                bisim_to_goal_dist = torch.norm(e_bisim - goal_bisim, dim=-1).mean().item()
-                bisim_pred_dist = torch.norm(e_bisim - i_bisim, dim=-1).mean().item()
-                
-                # print(f"EVALUATOR: Bisimulation distance metrics - to_goal: {bisim_to_goal_dist:.4f}, pred_vs_actual: {bisim_pred_dist:.4f}")
-
-                logs.update({
-                    "mean_bisim_to_goal_dist": bisim_to_goal_dist,
-                    "mean_bisim_pred_dist": bisim_pred_dist,
                 })
 
         return logs, successes

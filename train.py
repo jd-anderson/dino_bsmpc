@@ -175,14 +175,8 @@ class Trainer:
             if self.train_predictor and self.cfg.has_predictor
             else []
         )
-        # Save bisim_predictor if present (part of the visual world model)
         self._keys_to_save += (
-            ["bisim_predictor"]
-            if self.train_predictor and self.cfg.get('has_bisim', False)
-            else []
-        )
-        self._keys_to_save += (
-            ["decoder", "decoder_optimizer"] if self.train_decoder else []
+            ["decoder", "decoder_optimizer"] if (self.train_decoder and self.cfg.has_decoder) else []
         )
         self._keys_to_save += (
             ["bisim_model", "bisim_optimizer"]
@@ -203,10 +197,13 @@ class Trainer:
                 os.makedirs("checkpoints")
             ckpt = {}
             for k in self._keys_to_save:
-                if hasattr(self.__dict__[k], "module"):
-                    ckpt[k] = self.accelerator.unwrap_model(self.__dict__[k])
+                obj = getattr(self, k, None)
+                if obj is None:
+                    continue
+                if hasattr(obj, "module"):
+                    ckpt[k] = self.accelerator.unwrap_model(obj)
                 else:
-                    ckpt[k] = self.__dict__[k]
+                    ckpt[k] = obj
             torch.save(ckpt, "checkpoints/model_latest.pth")
             torch.save(ckpt, f"checkpoints/model_{self.epoch}.pth")
             log.info("Saved model to {}".format(os.getcwd()))
@@ -276,11 +273,20 @@ class Trainer:
 
         if self.cfg.has_predictor:
             if self.predictor is None:
+                if self.cfg.get('has_bisim', False):
+                    # use bisim latent dim
+                    visual_emb_dim = self.cfg.get('bisim_latent_dim', 8)
+                    log.info(f"Initializing predictor with bisimulation latent dim: {visual_emb_dim}")
+                else:
+                    # use standard encoder dim
+                    visual_emb_dim = self.encoder.emb_dim
+                    log.info(f"Initializing predictor with standard encoder dim: {visual_emb_dim}")
+
                 self.predictor = hydra.utils.instantiate(
                     self.cfg.predictor,
                     num_patches=num_patches,
                     num_frames=self.cfg.num_hist,
-                    dim=self.encoder.emb_dim
+                    dim=visual_emb_dim
                         + (
                                 proprio_emb_dim * self.cfg.num_proprio_repeat
                                 + action_emb_dim * self.cfg.num_action_repeat
@@ -385,13 +391,6 @@ class Trainer:
             bisim_comparison_size=self.cfg.get('bisim_comparison_size', 20),
         )
 
-        # Prepare / register bisim predictor for training, saving
-        if hasattr(self.model, 'bisim_predictor') and self.model.bisim_predictor is not None:
-            # move under accelerator
-            self.model.bisim_predictor = self.accelerator.prepare(self.model.bisim_predictor)
-            # expose for checkpointing
-            self.bisim_predictor = self.model.bisim_predictor
-
     def init_optimizers(self):
         self.encoder_optimizer = torch.optim.Adam(
             self.encoder.parameters(),
@@ -407,11 +406,8 @@ class Trainer:
             self.bisim_optimizer = self.accelerator.prepare(self.bisim_optimizer)
 
         if self.cfg.has_predictor:
-            # Include both regular predictor and bisim predictor if they exist
             predictor_params = list(self.predictor.parameters())
-            if hasattr(self.model, 'bisim_predictor') and self.model.bisim_predictor is not None:
-                predictor_params.extend(list(self.model.bisim_predictor.parameters()))
-            
+
             self.predictor_optimizer = torch.optim.AdamW(
                 predictor_params,
                 lr=self.cfg.training.predictor_lr,
@@ -583,6 +579,9 @@ class Trainer:
                     z_gt = self.model.encode_obs(obs)
                     z_tgt = slice_trajdict_with_t(z_gt, start_idx=self.model.num_pred)
 
+                    if self.cfg.get('has_bisim', False):
+                        z_tgt["visual"] = self.model.encode_bisim(z_tgt)
+
                     state_tgt = state[:, -self.model.num_hist:]  # (b, num_hist, dim)
                     err_logs = self.err_eval(z_obs_out, z_tgt)
 
@@ -679,6 +678,9 @@ class Trainer:
                     z_gt = self.model.encode_obs(obs)
                     z_tgt = slice_trajdict_with_t(z_gt, start_idx=self.model.num_pred)
 
+                    if self.cfg.get('has_bisim', False):
+                        z_tgt["visual"] = self.model.encode_bisim(z_tgt)
+
                     state_tgt = state[:, -self.model.num_hist:]  # (b, num_hist, dim)
                     err_logs = self.err_eval(z_obs_out, z_tgt)
 
@@ -772,10 +774,10 @@ class Trainer:
 
             for k in obs.keys():
                 obs[k] = obs[k][
-                         start:
-                         start + horizon * self.cfg.frameskip + 1:
-                         self.cfg.frameskip
-                         ]
+                    start:
+                    start + horizon * self.cfg.frameskip + 1:
+                    self.cfg.frameskip
+                ]
             act = act[start: start + horizon * self.cfg.frameskip]
             act = rearrange(act, "(h f) d -> h (f d)", f=self.cfg.frameskip)
 
@@ -783,6 +785,15 @@ class Trainer:
             for k in obs.keys():
                 obs_g[k] = obs[k][-1].unsqueeze(0).unsqueeze(0).to(self.device)
             z_g = self.model.encode_obs(obs_g)
+
+            # encode goal
+            if self.cfg.get('has_bisim', False):
+                if self.cfg.model.get('bypass_dinov2', False):
+                    z_bisim_g = self.model.encode_bisim(obs_g)
+                else:
+                    z_bisim_g = self.model.encode_bisim(z_g)
+                z_g_bisim = {"visual": z_bisim_g, "proprio": z_g["proprio"]}
+
             actions = act.unsqueeze(0)
 
             for past in num_past:
@@ -794,19 +805,12 @@ class Trainer:
                         obs[k][:n_past].unsqueeze(0).to(self.device)
                     )  # unsqueeze for batch, (b, t, c, h, w)
 
-                # Check if we're using bisimulation model
                 if self.cfg.get('has_bisim', False):
-                    z_obses, z, z_bisim = self.model.rollout(obs_0, actions)
+                    z_obses, z = self.model.rollout(obs_0, actions)
                     z_obs_last = slice_trajdict_with_t(z_obses, start_idx=-1, end_idx=None)
-                    div_loss = self.err_eval_single(z_obs_last, z_g)
+                    div_loss = self.err_eval_single(z_obs_last, z_g_bisim)
 
-                    # Also calculate bisimulation distance
-                    z_bisim_last = z_bisim[:, -1:, :]
-                    # Handle bypass mode for goal encoding
-                    if self.cfg.model.get('bypass_dinov2', False):
-                        z_bisim_g = self.model.encode_bisim(obs_g)
-                    else:
-                        z_bisim_g = self.model.encode_bisim(z_g)
+                    z_bisim_last = z_obses["visual"][:, -1:, :]
                     bisim_dist = torch.norm(z_bisim_last - z_bisim_g, dim=-1).mean()
 
                     log_key = f"bisim_dist_rollout{postfix}"
@@ -830,7 +834,7 @@ class Trainer:
                             div_loss[k]
                         ]
 
-                if self.cfg.has_decoder:
+                if self.cfg.has_decoder and not self.cfg.get('has_bisim', False):
                     visuals = self.model.decode_obs(z_obses)[0]["visual"]
                     imgs = torch.cat([obs["visual"], visuals[0].cpu()], dim=0)
                     self.plot_imgs(
@@ -861,19 +865,26 @@ class Trainer:
             to_log = sum / count
             epoch_log[key] = to_log
         epoch_log["epoch"] = step
-        log.info(f"Epoch {self.epoch}  Training loss: {epoch_log['train_loss']:.4f}  \
-                Validation loss: {epoch_log['val_loss']:.4f}")
-        log.info(f"Train:  Bisim_loss: {epoch_log['train_bisim_loss']:.4f}  \
-                Standard_L2_Loss: {epoch_log['train_standard_l2_loss']:.4f}  z_proprio_loss: {epoch_log['train_z_proprio_loss']:.4f} \
-                Bisim z_dist: {epoch_log['train_bisim_z_dist']:.4f}  Bisim r_dist: {epoch_log['train_bisim_r_dist']:.4f}  \
-                Variance loss: {epoch_log['train_bisim_var_loss']:.4f}  Transition_dist (Covariance): {epoch_log['train_bisim_transition_dist']:.4f} \
-                Covariance loss: {epoch_log['train_bisim_cov_reg']:.4f}")
-        log.info(f"Validation:  Bisim_loss: {epoch_log['val_bisim_loss']:.4f}  \
-                Standard_L2_Loss: {epoch_log['val_standard_l2_loss']:.4f}  z_proprio_loss: {epoch_log['val_z_proprio_loss']:.4f} \
-                Bisim z_dist: {epoch_log['val_bisim_z_dist']:.4f}  Bisim r_dist: {epoch_log['val_bisim_r_dist']:.4f}  \
-                Variance loss: {epoch_log['val_bisim_var_loss']:.4f}  Transition_dist (Covariance): {epoch_log['val_bisim_transition_dist']:.4f} \
-                Covariance loss: {epoch_log['val_bisim_cov_reg']:.4f}")
-        
+
+        log_msg = f"Epoch {self.epoch}  Training loss: {epoch_log.get('train_loss', 0):.4f}  Validation loss: {epoch_log.get('val_loss', 0):.4f}"
+        log.info(log_msg)
+
+        if 'train_bisim_loss' in epoch_log:
+            bisim_msg = f"Train:  Bisim_loss: {epoch_log.get('train_bisim_loss', 0):.4f}  \
+                    z_loss: {epoch_log.get('train_z_loss', 0):.4f}  z_proprio_loss: {epoch_log.get('train_z_proprio_loss', 0):.4f} \
+                    Bisim z_dist: {epoch_log.get('train_bisim_z_dist', 0):.4f}  Bisim r_dist: {epoch_log.get('train_bisim_r_dist', 0):.4f}  \
+                    Variance loss: {epoch_log.get('train_bisim_var_loss', 0):.4f}  Transition_dist (Covariance): {epoch_log.get('train_bisim_transition_dist', 0):.4f} \
+                    Covariance loss: {epoch_log.get('train_bisim_cov_reg', 0):.4f}"
+            log.info(bisim_msg)
+
+        if 'val_bisim_loss' in epoch_log:
+            val_bisim_msg = f"Validation:  Bisim_loss: {epoch_log.get('val_bisim_loss', 0):.4f}  \
+                    z_loss: {epoch_log.get('val_z_loss', 0):.4f}  z_proprio_loss: {epoch_log.get('val_z_proprio_loss', 0):.4f} \
+                    Bisim z_dist: {epoch_log.get('val_bisim_z_dist', 0):.4f}  Bisim r_dist: {epoch_log.get('val_bisim_r_dist', 0):.4f}  \
+                    Variance loss: {epoch_log.get('val_bisim_var_loss', 0):.4f}  Transition_dist (Covariance): {epoch_log.get('val_bisim_transition_dist', 0):.4f} \
+                    Covariance loss: {epoch_log.get('val_bisim_cov_reg', 0):.4f}"
+            log.info(val_bisim_msg)
+
         append_loss_to_csv(epoch_log, "training_loss_log.csv")
 
         if self.accelerator.is_main_process:
