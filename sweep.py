@@ -3,13 +3,14 @@ import json
 import os
 import argparse
 
+
 def extract_planning_result_dir_alternative(output_string):
     """
     Alternative method using string splitting (more robust for this specific case)
-    
+
     Args:
         output_string (str): The output string containing the planning result
-        
+
     Returns:
         str: The extracted directory path, or None if not found
     """
@@ -25,52 +26,52 @@ def extract_planning_result_dir_alternative(output_string):
 def parse_logs_json(file_path):
     """
     Parse logs.json file to extract final success rate and total steps.
-    
+
     Args:
         file_path (str): Path to the logs.json file
-        
+
     Returns:
         dict: Dictionary containing final_success_rate and total_steps
     """
     try:
         with open(file_path, 'r') as f:
             content = f.read().strip()
-        
+
         # Split by lines and parse each JSON object
         lines = content.strip().split('\n')
-        
+
         final_success_rate = None
         max_step = 0
         total_steps = 0
-        
+
         for line in lines:
             line = line.strip()
             if not line:
                 continue
-                
+
             try:
                 data = json.loads(line)
-                
+
                 # Check for final_eval/success_rate
                 if "final_eval/success_rate" in data:
                     final_success_rate = data["final_eval/success_rate"]
-                
+
                 # Track the maximum step number
                 if "step" in data:
                     step_num = data["step"]
                     max_step = max(max_step, step_num)
                     total_steps = max_step  # Update total steps
-                    
+
             except json.JSONDecodeError as e:
                 print(f"Warning: Could not parse line: {line[:50]}... Error: {e}")
                 continue
-        
+
         return {
             "final_success_rate": final_success_rate,
             "total_steps": total_steps,
             "file_path": file_path
         }
-        
+
     except FileNotFoundError:
         print(f"Error: File {file_path} not found")
         return None
@@ -78,90 +79,89 @@ def parse_logs_json(file_path):
         print(f"Error reading file {file_path}: {e}")
         return None
 
+
 def parse_logs_from_directory(directory_path):
     """
     Parse logs.json from a specific directory.
-    
+
     Args:
         directory_path (str): Path to directory containing logs.json
-        
+
     Returns:
         dict: Dictionary containing final_success_rate and total_steps
     """
     logs_path = os.path.join(directory_path, "logs.json")
     return parse_logs_json(logs_path)
 
+
 def parse_arguments():
     """
     Parse command line arguments.
-    
+
     Returns:
         argparse.Namespace: Parsed arguments
     """
     parser = argparse.ArgumentParser(
-        description="Run planning experiments with different bisim weights and model epochs"
+        description="Run planning experiments with different model epochs"
     )
-    
+
     parser.add_argument(
-        "--model-name", 
-        type=str, 
+        "--model-name",
+        type=str,
         default="mod1_bisim_1024_coef_1",
         help="Name of the model to use (default: mod1_bisim_1024_coef_1)"
     )
-    
+
     parser.add_argument(
         "--n-evals",
         type=int,
         default=5,
         help="Number of evaluations (default: 5)"
     )
-    
+
     parser.add_argument(
         "--planner",
         type=str,
         default="cem",
         help="Planner type (default: cem)"
     )
-    
+
     parser.add_argument(
         "--goal-h",
         type=int,
         default=5,
         help="Goal horizon (default: 5)"
     )
-    
+
     parser.add_argument(
         "--goal-source",
         type=str,
         default="random_state",
         help="Goal source (default: random_state)"
     )
-    
+
     parser.add_argument(
         "--opt-steps",
         type=int,
         default=30,
         help="Optimization steps for planner (default: 30)"
     )
-    
+
     parser.add_argument(
         "--timeout",
         type=int,
         default=6000,
         help="Timeout for subprocess in seconds (default: 6000)"
     )
-    
+
     return parser.parse_args()
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
 
     args = parse_arguments()
-    
-    # Define parameter ranges
-    bisim_weights = [1]
+
     model_epochs = list(range(5, 55, 5))  # 5, 10, ..., 50
-    backgrounds = ['no_change', 'slight_change', 'gradient']
 
     base_args = [
         "python", "plan.py",
@@ -173,38 +173,76 @@ if __name__=="__main__":
         f"planner.opt_steps={args.opt_steps}"
     ]
 
+    result_logs_list = []
+    print("=" * 75)
+    for model_epoch in model_epochs:
+        cmd = base_args + [
+            f"model_epoch={model_epoch}",
+        ]
 
+        print(f"\nRunning planning for epoch {model_epoch}...")
+        print(f"Command: {' '.join(cmd)}")
 
-    for background in backgrounds: 
-        result_logs_list = []
-        print("=" *75)
-        print("Current sweeping: " + background)
-        for bisim_weight in bisim_weights:
-            for model_epoch in model_epochs:
-                
-                # Create commands
-                cmd = base_args + [
-                    f"objective.bisim_weight={bisim_weight}",
-                    f"model_epoch={model_epoch}",
-                    f"point_maze_env.background={background}"
-                ]
+        # run planning
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
 
-                # run planning
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+        # check if subprocess succeeded
+        if result.returncode != 0:
+            print(f"ERROR: Planning failed with return code {result.returncode}")
+            print(f"STDOUT:\n{result.stdout}")
+            print(f"STDERR:\n{result.stderr}")
+            result_logs = {
+                'model_epoch': model_epoch,
+                'error': f'Planning failed with return code {result.returncode}',
+                'stdout': result.stdout[:500] if result.stdout else None,
+                'stderr': result.stderr[:500] if result.stderr else None
+            }
+            result_logs_list.append(result_logs)
+            print(f"Result: {result_logs}")
+            continue
 
-                # select the result directory from result
-                result_dir = extract_planning_result_dir_alternative(result.stdout)
+        # select the result directory
+        result_dir = extract_planning_result_dir_alternative(result.stdout)
 
-                result_logs = {'bisim_weight': bisim_weight,
-                                'model_epoch': model_epoch}
+        if result_dir is None:
+            print(f"ERROR: Could not extract result directory from stdout")
+            print(f"STDOUT (last 1000 chars):\n{result.stdout[-1000:]}")
+            result_logs = {
+                'model_epoch': model_epoch,
+                'error': 'Could not extract result directory from stdout',
+                'stdout_preview': result.stdout[-500:] if result.stdout else None
+            }
+            result_logs_list.append(result_logs)
+            print(f"Result: {result_logs}")
+            continue
 
-                result_logs.update(parse_logs_from_directory(result_dir))
+        print(f"Result directory: {result_dir}")
 
-                result_logs_list.append(result_logs)
+        if not os.path.exists(result_dir):
+            print(f"ERROR: Result directory does not exist: {result_dir}")
+            result_logs = {
+                'model_epoch': model_epoch,
+                'error': f'Result directory does not exist: {result_dir}',
+                'result_dir': result_dir
+            }
+            result_logs_list.append(result_logs)
+            print(f"Result: {result_logs}")
+            continue
 
-                print(result_logs)
+        result_logs = {'model_epoch': model_epoch}
 
+        logs_data = parse_logs_from_directory(result_dir)
+        if logs_data is None:
+            print(f"WARNING: Could not parse logs.json from {result_dir}")
+            result_logs['error'] = 'Could not parse logs.json'
+            result_logs['result_dir'] = result_dir
+        else:
+            result_logs.update(logs_data)
 
-        with open(f'{background}.txt', 'w') as file:
+        result_logs_list.append(result_logs)
+
+        print(f"Result: {result_logs}")
+
+        with open(f'{args.model_name}_sweep.txt', 'w') as file:
             for result_log in result_logs_list:
                 file.write(str(result_log) + '\n')

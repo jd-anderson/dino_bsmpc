@@ -122,76 +122,6 @@ class PlanWorkspace:
             frameskip: int,
             wandb_run: wandb.run,
     ):
-        import json
-        
-        def log_workspace(data):
-            """Log workspace details"""
-            # Convert data to JSON-serializable format
-            serializable_data = {}
-            for key, value in data.items():
-                if hasattr(value, '__class__') and 'Config' in value.__class__.__name__:
-                    # Handle OmegaConf objects
-                    try:
-                        serializable_data[key] = value.__dict__ if hasattr(value, '__dict__') else str(value)
-                    except:
-                        serializable_data[key] = str(value)
-                elif isinstance(value, np.integer):
-                    serializable_data[key] = int(value)
-                elif isinstance(value, np.floating):
-                    serializable_data[key] = float(value)
-                elif isinstance(value, np.ndarray):
-                    serializable_data[key] = value.tolist()
-                elif isinstance(value, torch.Tensor):
-                    serializable_data[key] = value.detach().cpu().numpy().tolist()
-                elif isinstance(value, (list, tuple)):
-                    # Handle lists/tuples that might contain non-serializable objects
-                    serializable_data[key] = []
-                    for item in value:
-                        if isinstance(item, np.integer):
-                            serializable_data[key].append(int(item))
-                        elif isinstance(item, np.floating):
-                            serializable_data[key].append(float(item))
-                        elif isinstance(item, np.ndarray):
-                            serializable_data[key].append(item.tolist())
-                        elif isinstance(item, torch.Tensor):
-                            serializable_data[key].append(item.detach().cpu().numpy().tolist())
-                        elif not isinstance(item, (str, int, float, bool, type(None))):
-                            serializable_data[key].append(str(item))
-                        else:
-                            serializable_data[key].append(item)
-                elif isinstance(value, dict):
-                    # Handle nested dictionaries
-                    serializable_data[key] = {}
-                    for k, v in value.items():
-                        if isinstance(v, np.integer):
-                            serializable_data[key][k] = int(v)
-                        elif isinstance(v, np.floating):
-                            serializable_data[key][k] = float(v)
-                        elif isinstance(v, np.ndarray):
-                            serializable_data[key][k] = v.tolist()
-                        elif isinstance(v, torch.Tensor):
-                            serializable_data[key][k] = v.detach().cpu().numpy().tolist()
-                        elif not isinstance(v, (str, int, float, bool, type(None))):
-                            serializable_data[key][k] = str(v)
-                        else:
-                            serializable_data[key][k] = v
-                else:
-                    serializable_data[key] = value
-            
-            log_entry = {
-                "timestamp": np.datetime64('now').astype(str),
-                **serializable_data
-            }
-            with open("workspace_log.json", "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
-        
-        log_workspace({
-            "event": "workspace_init_start",
-            "env_name": env_name,
-            "frameskip": frameskip,
-            "cfg_dict_keys": list(cfg_dict.keys()),
-        })
-        
         self.cfg_dict = cfg_dict
         self.wm = wm
         self.dset = dset
@@ -200,21 +130,6 @@ class PlanWorkspace:
         self.frameskip = frameskip
         self.wandb_run = wandb_run
         self.device = next(wm.parameters()).device
-
-        # Check if world model has bisimulation
-        has_bisim = hasattr(wm, 'has_bisim') and wm.has_bisim
-        # print("\n" + "="*80)
-        if has_bisim:
-            # print(f"PLAN BISIM LOG: Loaded world model WITH bisimulation capabilities")
-            # print(f"PLAN BISIM LOG: Bisimulation model: {wm.bisim_model}")
-            # print(f"PLAN BISIM LOG: Bisimulation latent dim: {wm.bisim_latent_dim}")
-            # print(f"PLAN BISIM LOG: Bisimulation coefficient: {wm.bisim_coef}")
-            # print(f"PLAN BISIM LOG: Training bisimulation: {getattr(wm, 'train_bisim', 'Unknown')}")
-            pass
-        else:
-            # print(f"PLAN BISIM LOG: Loaded world model WITHOUT bisimulation capabilities")
-            pass
-        # print("="*80 + "\n")
 
         # have different seeds for each planning instances
         self.eval_seed = [cfg_dict["seed"] * n + 1 for n in range(cfg_dict["n_evals"])]
@@ -225,27 +140,9 @@ class PlanWorkspace:
         self.action_dim = self.dset.action_dim * self.frameskip
         self.debug_dset_init = cfg_dict["debug_dset_init"]
 
-        log_workspace({
-            "event": "workspace_basic_setup",
-            "has_bisim": has_bisim,
-            "eval_seed": self.eval_seed,
-            "n_evals": self.n_evals,
-            "goal_source": self.goal_source,
-            "goal_H": self.goal_H,
-            "action_dim": self.action_dim,
-            "debug_dset_init": self.debug_dset_init,
-        })
-
         objective_fn = hydra.utils.call(
             cfg_dict["objective"],
-            wm=self.wm,
         )
-        
-        log_workspace({
-            "event": "objective_fn_created",
-            "objective_fn_type": str(type(objective_fn)),
-            "objective_config": str(cfg_dict["objective"]),
-        })
 
         self.data_preprocessor = Preprocessor(
             action_mean=self.dset.action_mean,
@@ -256,27 +153,11 @@ class PlanWorkspace:
             proprio_std=self.dset.proprio_std,
             transform=self.dset.transform,
         )
-        
-        log_workspace({
-            "event": "preprocessor_created",
-            "preprocessor_type": str(type(self.data_preprocessor)),
-            "action_mean_shape": list(self.dset.action_mean.shape),
-            "action_std_shape": list(self.dset.action_std.shape),
-        })
 
         if self.cfg_dict["goal_source"] == "file":
             self.prepare_targets_from_file(cfg_dict["goal_file_path"])
         else:
             self.prepare_targets()
-        
-        log_workspace({
-            "event": "targets_prepared",
-            "obs_0_shapes": {k: list(v.shape) for k, v in self.obs_0.items()},
-            "obs_g_shapes": {k: list(v.shape) for k, v in self.obs_g.items()},
-            "state_0_shape": list(self.state_0.shape),
-            "state_g_shape": list(self.state_g.shape),
-            "gt_actions_shape": list(self.gt_actions.shape) if self.gt_actions is not None else None,
-        })
 
         self.evaluator = PlanEvaluator(
             obs_0=self.obs_0,
@@ -290,12 +171,6 @@ class PlanWorkspace:
             preprocessor=self.data_preprocessor,
             n_plot_samples=self.cfg_dict["n_plot_samples"],
         )
-        
-        log_workspace({
-            "event": "evaluator_created",
-            "evaluator_type": str(type(self.evaluator)),
-            "n_plot_samples": self.cfg_dict["n_plot_samples"],
-        })
 
         if self.wandb_run is None or isinstance(
                 self.wandb_run, wandb.sdk.lib.disabled.RunDisabled
@@ -314,12 +189,6 @@ class PlanWorkspace:
             wandb_run=self.wandb_run,
             log_filename=self.log_filename,
         )
-        
-        log_workspace({
-            "event": "planner_created",
-            "planner_type": str(type(self.planner)),
-            "planner_config": str(self.cfg_dict["planner"]),
-        })
 
         # optional: assume planning horizon equals to goal horizon
         from planning.mpc import MPCPlanner
@@ -331,81 +200,7 @@ class PlanWorkspace:
 
         self.dump_targets()
 
-        log_workspace({
-            "event": "workspace_init_complete",
-            "final_horizon": self.planner.horizon if hasattr(self.planner, 'horizon') else None,
-        })
-
     def prepare_targets(self):
-        import json
-        
-        def log_targets(data):
-            """Log target preparation details"""
-            # Convert data to JSON-serializable format
-            serializable_data = {}
-            for key, value in data.items():
-                if hasattr(value, '__class__') and 'Config' in value.__class__.__name__:
-                    # Handle OmegaConf objects
-                    try:
-                        serializable_data[key] = value.__dict__ if hasattr(value, '__dict__') else str(value)
-                    except:
-                        serializable_data[key] = str(value)
-                elif isinstance(value, np.integer):
-                    serializable_data[key] = int(value)
-                elif isinstance(value, np.floating):
-                    serializable_data[key] = float(value)
-                elif isinstance(value, np.ndarray):
-                    serializable_data[key] = value.tolist()
-                elif isinstance(value, torch.Tensor):
-                    serializable_data[key] = value.detach().cpu().numpy().tolist()
-                elif isinstance(value, (list, tuple)):
-                    # Handle lists/tuples that might contain non-serializable objects
-                    serializable_data[key] = []
-                    for item in value:
-                        if isinstance(item, np.integer):
-                            serializable_data[key].append(int(item))
-                        elif isinstance(item, np.floating):
-                            serializable_data[key].append(float(item))
-                        elif isinstance(item, np.ndarray):
-                            serializable_data[key].append(item.tolist())
-                        elif isinstance(item, torch.Tensor):
-                            serializable_data[key].append(item.detach().cpu().numpy().tolist())
-                        elif not isinstance(item, (str, int, float, bool, type(None))):
-                            serializable_data[key].append(str(item))
-                        else:
-                            serializable_data[key].append(item)
-                elif isinstance(value, dict):
-                    # Handle nested dictionaries
-                    serializable_data[key] = {}
-                    for k, v in value.items():
-                        if isinstance(v, np.integer):
-                            serializable_data[key][k] = int(v)
-                        elif isinstance(v, np.floating):
-                            serializable_data[key][k] = float(v)
-                        elif isinstance(v, np.ndarray):
-                            serializable_data[key][k] = v.tolist()
-                        elif isinstance(v, torch.Tensor):
-                            serializable_data[key][k] = v.detach().cpu().numpy().tolist()
-                        elif not isinstance(v, (str, int, float, bool, type(None))):
-                            serializable_data[key][k] = str(v)
-                        else:
-                            serializable_data[key][k] = v
-                else:
-                    serializable_data[key] = value
-            
-            log_entry = {
-                "timestamp": np.datetime64('now').astype(str),
-                **serializable_data
-            }
-            with open("targets_log.json", "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
-        
-        log_targets({
-            "event": "prepare_targets_start",
-            "goal_source": self.goal_source,
-            "goal_H": self.goal_H,
-        })
-        
         states = []
         actions = []
         observations = []
@@ -437,15 +232,6 @@ class PlanWorkspace:
             self.state_0 = rand_init_state  # (b, d)
             self.state_g = rand_goal_state
             self.gt_actions = None
-            
-            log_targets({
-                "event": "random_state_targets_created",
-                "rand_init_state_shape": list(rand_init_state.shape),
-                "rand_goal_state_shape": list(rand_goal_state.shape),
-                "obs_0_shapes": {k: list(v.shape) for k, v in obs_0.items()},
-                "obs_g_shapes": {k: list(v.shape) for k, v in obs_g.items()},
-            })
-            
         else:
             # update env config from val trajs
             observations, states, actions, env_info = (
@@ -476,15 +262,6 @@ class PlanWorkspace:
             self.state_0 = init_state  # (b, d)
             self.state_g = rollout_states[:, -1]  # (b, d)
             self.gt_actions = wm_actions
-            
-            log_targets({
-                "event": "dataset_targets_created",
-                "init_state_shape": list(init_state.shape),
-                "rollout_states_shape": list(rollout_states.shape),
-                "wm_actions_shape": list(wm_actions.shape),
-                "obs_0_shapes": {k: list(v.shape) for k, v in self.obs_0.items()},
-                "obs_g_shapes": {k: list(v.shape) for k, v in self.obs_g.items()},
-            })
 
     def sample_traj_segment_from_dset(self, traj_len):
         states = []
@@ -549,114 +326,18 @@ class PlanWorkspace:
         print(f"Dumped plan targets to {file_path}")
 
     def perform_planning(self):
-        import json
-        
-        def log_perform_planning(data):
-            """Log planning execution details"""
-            # Convert data to JSON-serializable format
-            serializable_data = {}
-            for key, value in data.items():
-                if hasattr(value, '__class__') and 'Config' in value.__class__.__name__:
-                    # Handle OmegaConf objects
-                    try:
-                        serializable_data[key] = value.__dict__ if hasattr(value, '__dict__') else str(value)
-                    except:
-                        serializable_data[key] = str(value)
-                elif isinstance(value, np.integer):
-                    serializable_data[key] = int(value)
-                elif isinstance(value, np.floating):
-                    serializable_data[key] = float(value)
-                elif isinstance(value, np.ndarray):
-                    serializable_data[key] = value.tolist()
-                elif isinstance(value, torch.Tensor):
-                    serializable_data[key] = value.detach().cpu().numpy().tolist()
-                elif isinstance(value, (list, tuple)):
-                    # Handle lists/tuples that might contain non-serializable objects
-                    serializable_data[key] = []
-                    for item in value:
-                        if isinstance(item, np.integer):
-                            serializable_data[key].append(int(item))
-                        elif isinstance(item, np.floating):
-                            serializable_data[key].append(float(item))
-                        elif isinstance(item, np.ndarray):
-                            serializable_data[key].append(item.tolist())
-                        elif isinstance(item, torch.Tensor):
-                            serializable_data[key].append(item.detach().cpu().numpy().tolist())
-                        elif not isinstance(item, (str, int, float, bool, type(None))):
-                            serializable_data[key].append(str(item))
-                        else:
-                            serializable_data[key].append(item)
-                elif isinstance(value, dict):
-                    # Handle nested dictionaries
-                    serializable_data[key] = {}
-                    for k, v in value.items():
-                        if isinstance(v, np.integer):
-                            serializable_data[key][k] = int(v)
-                        elif isinstance(v, np.floating):
-                            serializable_data[key][k] = float(v)
-                        elif isinstance(v, np.ndarray):
-                            serializable_data[key][k] = v.tolist()
-                        elif isinstance(v, torch.Tensor):
-                            serializable_data[key][k] = v.detach().cpu().numpy().tolist()
-                        elif not isinstance(v, (str, int, float, bool, type(None))):
-                            serializable_data[key][k] = str(v)
-                        else:
-                            serializable_data[key][k] = v
-                else:
-                    serializable_data[key] = value
-            
-            log_entry = {
-                "timestamp": np.datetime64('now').astype(str),
-                **serializable_data
-            }
-            with open("perform_planning_log.json", "a") as f:
-                f.write(json.dumps(log_entry) + "\n")
-        
-        log_perform_planning({
-            "event": "perform_planning_start",
-            "debug_dset_init": self.debug_dset_init,
-            "gt_actions_shape": list(self.gt_actions.shape) if self.gt_actions is not None else None,
-        })
-        
         if self.debug_dset_init:
             actions_init = self.gt_actions
         else:
             actions_init = None
-            
-        log_perform_planning({
-            "event": "actions_init_set",
-            "actions_init_shape": list(actions_init.shape) if actions_init is not None else None,
-        })
-        
         actions, action_len = self.planner.plan(
             obs_0=self.obs_0,
             obs_g=self.obs_g,
             actions=actions_init,
         )
-        
-        log_perform_planning({
-            "event": "planning_completed",
-            "actions_shape": list(actions.shape),
-            "action_len": action_len,
-            "actions_stats": {
-                "mean": float(actions.mean().item()),
-                "std": float(actions.std().item()),
-                "min": float(actions.min().item()),
-                "max": float(actions.max().item()),
-            },
-        })
-        
         logs, successes, _, _ = self.evaluator.eval_actions(
             actions.detach(), action_len, save_video=True, filename="output_final"
         )
-        
-        log_perform_planning({
-            "event": "evaluation_completed",
-            "successes": successes.tolist() if hasattr(successes, 'tolist') else list(successes),
-            "success_rate": float(np.mean(successes)),
-            "logs": logs,
-        })
-        
         logs = {f"final_eval/{k}": v for k, v in logs.items()}
         self.wandb_run.log(logs)
         logs_entry = {
@@ -669,12 +350,6 @@ class PlanWorkspace:
         }
         with open(self.log_filename, "a") as file:
             file.write(json.dumps(logs_entry) + "\n")
-            
-        log_perform_planning({
-            "event": "perform_planning_complete",
-            "final_logs": logs,
-        })
-        
         return logs
 
 
@@ -721,37 +396,48 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
     elif not train_cfg.has_decoder:
         result["decoder"] = None
 
-    if not train_cfg.get('has_bisim', False):
+    has_bisim = train_cfg.get('has_bisim', False)
+    if not has_bisim:
         result["bisim_model"] = None
 
-    if result.get("bisim_model") is not None:
-        actual_bisim_latent_dim = result["bisim_model"].latent_dim
-        actual_bisim_hidden_dim = result["bisim_model"].hidden_dim
-        # print(f"DEBUG: Using actual bisimulation parameters from checkpoint: latent_dim={actual_bisim_latent_dim}, hidden_dim={actual_bisim_hidden_dim}")
-    else:
-        actual_bisim_latent_dim = train_cfg.get('bisim_latent_dim', 64)
-        actual_bisim_hidden_dim = train_cfg.get('bisim_hidden_dim', 256)
-        # print(f"DEBUG: Using config bisimulation parameters: latent_dim={actual_bisim_latent_dim}, hidden_dim={actual_bisim_hidden_dim}")
+    model_kwargs = {
+        "encoder": result["encoder"],
+        "proprio_encoder": result["proprio_encoder"],
+        "action_encoder": result["action_encoder"],
+        "predictor": result["predictor"],
+        "decoder": result["decoder"],
+        "proprio_dim": train_cfg.proprio_emb_dim,
+        "action_dim": train_cfg.action_emb_dim,
+        "concat_dim": train_cfg.concat_dim,
+        "num_action_repeat": num_action_repeat,
+        "num_proprio_repeat": train_cfg.num_proprio_repeat,
+    }
+
+    if has_bisim:
+        model_kwargs.update({
+            "bisim_model": result.get("bisim_model"),
+            "bisim_latent_dim": train_cfg.get('bisim_latent_dim', 64),
+            "bisim_hidden_dim": train_cfg.get('bisim_hidden_dim', 256),
+            "bisim_coef": train_cfg.get('bisim_coef', 1.0),
+            "var_loss_coef": train_cfg.get('var_loss_coef', 1.0),
+            "PCA1_loss_target": train_cfg.get('PCA1_loss_target', 0.01),
+            "VC_target": train_cfg.get('VC_target', 1.0),
+            "num_pcs": train_cfg.get('num_pcs', 10),
+            "PCAloss_epoch": train_cfg.get('PCAloss_epoch', 50),
+            "train_bisim": train_cfg.model.get('train_bisim', True),
+            "bypass_dinov2": train_cfg.model.get('bypass_dinov2', False),
+            "bisim_memory_buffer_size": train_cfg.get('bisim_memory_buffer_size', 0),
+            "bisim_comparison_size": train_cfg.get('bisim_comparison_size', 20),
+        })
 
     model = hydra.utils.instantiate(
         train_cfg.model,
-        encoder=result["encoder"],
-        proprio_encoder=result["proprio_encoder"],
-        action_encoder=result["action_encoder"],
-        predictor=result["predictor"],
-        decoder=result["decoder"],
-        bisim_model=result.get("bisim_model", None),
-        proprio_dim=train_cfg.proprio_emb_dim,
-        action_dim=train_cfg.action_emb_dim,
-        concat_dim=train_cfg.concat_dim,
-        num_action_repeat=num_action_repeat,
-        num_proprio_repeat=train_cfg.num_proprio_repeat,
-        bisim_coef=train_cfg.get('bisim_coef', 1.0),
-        bisim_latent_dim=actual_bisim_latent_dim,
-        bisim_hidden_dim=actual_bisim_hidden_dim,
-        train_bisim=train_cfg.model.get('train_bisim', True),
+        **model_kwargs
     )
     model.to(device)
+
+    if has_bisim:
+        print(f"[PLAN] Model loaded with bisimulation enabled (bisim_patch_dim={model.bisim_patch_dim})")
 
     return model
 
@@ -774,89 +460,11 @@ class DummyWandbRun:
 
 
 def planning_main(cfg_dict):
-    import json
-    import os
-    
-    def log_planning(data):
-        """Log planning process details"""
-        # Convert data to JSON-serializable format
-        serializable_data = {}
-        for key, value in data.items():
-            if hasattr(value, '__class__') and 'Config' in value.__class__.__name__:
-                # Handle OmegaConf objects
-                try:
-                    serializable_data[key] = value.__dict__ if hasattr(value, '__dict__') else str(value)
-                except:
-                    serializable_data[key] = str(value)
-            elif isinstance(value, np.integer):
-                serializable_data[key] = int(value)
-            elif isinstance(value, np.floating):
-                serializable_data[key] = float(value)
-            elif isinstance(value, np.ndarray):
-                serializable_data[key] = value.tolist()
-            elif isinstance(value, torch.Tensor):
-                serializable_data[key] = value.detach().cpu().numpy().tolist()
-            elif isinstance(value, (list, tuple)):
-                # Handle lists/tuples that might contain non-serializable objects
-                serializable_data[key] = []
-                for item in value:
-                    if isinstance(item, np.integer):
-                        serializable_data[key].append(int(item))
-                    elif isinstance(item, np.floating):
-                        serializable_data[key].append(float(item))
-                    elif isinstance(item, np.ndarray):
-                        serializable_data[key].append(item.tolist())
-                    elif isinstance(item, torch.Tensor):
-                        serializable_data[key].append(item.detach().cpu().numpy().tolist())
-                    elif not isinstance(item, (str, int, float, bool, type(None))):
-                        serializable_data[key].append(str(item))
-                    else:
-                        serializable_data[key].append(item)
-            elif isinstance(value, dict):
-                # Handle nested dictionaries
-                serializable_data[key] = {}
-                for k, v in value.items():
-                    if isinstance(v, np.integer):
-                        serializable_data[key][k] = int(v)
-                    elif isinstance(v, np.floating):
-                        serializable_data[key][k] = float(v)
-                    elif isinstance(v, np.ndarray):
-                        serializable_data[key][k] = v.tolist()
-                    elif isinstance(v, torch.Tensor):
-                        serializable_data[key][k] = v.detach().cpu().numpy().tolist()
-                    elif not isinstance(v, (str, int, float, bool, type(None))):
-                        serializable_data[key][k] = str(v)
-                    else:
-                        serializable_data[key][k] = v
-            else:
-                serializable_data[key] = value
-        
-        log_entry = {
-            "timestamp": np.datetime64('now').astype(str),
-            **serializable_data
-        }
-        with open("planning_main_log.json", "a") as f:
-            f.write(json.dumps(log_entry) + "\n")
-
-    # Log planning start
-    log_planning({
-        "event": "planning_main_start",
-        "cfg_dict": {k: v for k, v in cfg_dict.items() if not k.startswith('_')},
-        "output_dir": cfg_dict["saved_folder"],
-    })
-
     output_dir = cfg_dict["saved_folder"]
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    
-    log_planning({
-        "event": "device_setup",
-        "device": str(device),
-        "cuda_available": torch.cuda.is_available(),
-    })
-    
     if cfg_dict["wandb_logging"]:
         wandb_run = wandb.init(
-            project=f"plan_{cfg_dict['planner']['name']}", config=cfg_dict, mode="disabled" # mode="disabled" added for automated sweeping 
+            project=f"plan_{cfg_dict['planner']['name']}", config=cfg_dict
         )
         wandb.run.name = "{}".format(output_dir.split("plan_outputs/")[-1])
     else:
@@ -864,22 +472,8 @@ def planning_main(cfg_dict):
 
     ckpt_base_path = cfg_dict["ckpt_base_path"]
     model_path = f"{ckpt_base_path}/outputs/{cfg_dict['model_name']}/"
-    
-    log_planning({
-        "event": "model_path_setup",
-        "ckpt_base_path": ckpt_base_path,
-        "model_name": cfg_dict["model_name"],
-        "model_path": model_path,
-    })
-    
     with open(os.path.join(model_path, "hydra.yaml"), "r") as f:
         model_cfg = OmegaConf.load(f)
-    
-    log_planning({
-        "event": "model_config_loaded",
-        "model_cfg_keys": list(model_cfg.keys()),
-        "model_cfg_env": str(model_cfg.env) if hasattr(model_cfg, 'env') else None,
-    })
 
     seed(cfg_dict["seed"])
     _, dset = hydra.utils.call(
@@ -889,38 +483,12 @@ def planning_main(cfg_dict):
         frameskip=model_cfg.frameskip,
     )
     dset = dset["valid"]
-    
-    log_planning({
-        "event": "dataset_loaded",
-        "dataset_type": str(type(dset)),
-        "dataset_length": len(dset),
-        "num_hist": model_cfg.num_hist,
-        "num_pred": model_cfg.num_pred,
-        "frameskip": model_cfg.frameskip,
-    })
 
     num_action_repeat = model_cfg.num_action_repeat
     model_ckpt = (
             Path(model_path) / "checkpoints" / f"model_{cfg_dict['model_epoch']}.pth"
     )
-    
-    log_planning({
-        "event": "model_checkpoint_path",
-        "model_ckpt_path": str(model_ckpt),
-        "model_ckpt_exists": model_ckpt.exists(),
-        "model_epoch": cfg_dict["model_epoch"],
-    })
-    
     model = load_model(model_ckpt, model_cfg, num_action_repeat, device=device)
-    
-    log_planning({
-        "event": "model_loaded",
-        "model_type": str(type(model)),
-        "model_has_bisim": hasattr(model, 'has_bisim') and model.has_bisim,
-        "model_bisim_latent_dim": getattr(model, 'bisim_latent_dim', None),
-        "model_bisim_coef": getattr(model, 'bisim_coef', None),
-        "model_device": str(next(model.parameters()).device),
-    })
 
     # use dummy vector env for wall and deformable envs
     if model_cfg.env.name == "wall" or model_cfg.env.name == "deformable_env":
@@ -934,17 +502,6 @@ def planning_main(cfg_dict):
             ]
         )
     else:
-        # MOD1: add background change to the kwargs for point maze env
-        if 'point_maze_env' in cfg_dict:
-            if 'background' in cfg_dict['point_maze_env']:
-                if cfg_dict['point_maze_env']['background'] == 'slight_change':
-                    model_cfg.env['name']='point_maze_slight_change'
-                elif cfg_dict['point_maze_env']['background'] == 'gradient':
-                    model_cfg.env['name']='point_maze_gradient'
-                else:
-                    pass
-        #
-
         env = SubprocVectorEnv(
             [
                 lambda: gym.make(
@@ -953,14 +510,6 @@ def planning_main(cfg_dict):
                 for _ in range(cfg_dict["n_evals"])
             ]
         )
-    
-    log_planning({
-        "event": "environment_created",
-        "env_type": str(type(env)),
-        "env_name": model_cfg.env.name,
-        "n_evals": cfg_dict["n_evals"],
-        "point_maze_background": cfg_dict.get('point_maze_env', {}).get('background', None),
-    })
 
     plan_workspace = PlanWorkspace(
         cfg_dict=cfg_dict,
@@ -971,23 +520,8 @@ def planning_main(cfg_dict):
         frameskip=model_cfg.frameskip,
         wandb_run=wandb_run,
     )
-    
-    log_planning({
-        "event": "plan_workspace_created",
-        "workspace_type": str(type(plan_workspace)),
-        "goal_source": cfg_dict["goal_source"],
-        "goal_H": cfg_dict["goal_H"],
-        "action_dim": plan_workspace.action_dim,
-    })
 
     logs = plan_workspace.perform_planning()
-    
-    log_planning({
-        "event": "planning_completed",
-        "final_logs": logs,
-        "success_rate": logs.get("final_eval/success_rate", None),
-    })
-    
     return logs
 
 

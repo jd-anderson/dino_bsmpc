@@ -23,7 +23,7 @@ hydra:
             "export MASTER_PORT=$(for port in $(shuf -i 30000-65500 -n 20); do if [[ $(netstat -tupln 2>&1 | grep $port | wc -l) -eq 0 ]] ; then echo $port; break; fi; done;)",]
 
 # model to load for planning
-ckpt_base_path: /home/testtube/Desktop/dino_bsmpc # put absolute path here. Checkpoints will be loaded from ${ckpt_base_path}/outputs
+ckpt_base_path: '/media/dz2478/T7 Shield1/dino_v6' # put absolute path here. Checkpoints will be loaded from ${ckpt_base_path}/outputs
 model_name: null
 model_epoch: latest
 
@@ -40,9 +40,6 @@ objective:
   alpha: 1
   base: 2 # coeff base for weighting all frames. Only applies when mode == 'all'
   mode: last
-  use_bisim: true # whether to use bisimulation metrics for planning
-  bisim_weight: 1.0 # weight of bisimulation loss (only used when planning_space=original)
-  planning_space: bisim # 'original' for DINOv2 + weighted bisim loss, 'bisim' for planning directly in bisim space
 
 point_maze_env:
   _target_: env.pointmaze.maze_model.point_maze
