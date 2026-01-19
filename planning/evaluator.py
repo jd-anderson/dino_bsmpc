@@ -116,8 +116,8 @@ class PlanEvaluator:  # evaluator for planning
         e_visuals = e_obses["visual"]
         e_final_obs = self._get_trajdict_last(e_obses, action_len * self.frameskip + 1)
         e_final_state = self._get_traj_last(e_states, action_len * self.frameskip + 1)[
-                        :, 0
-                        ]  # reduce dim back
+            :, 0
+        ]  # reduce dim back
 
         # compute eval metrics
         logs, successes = self._compute_rollout_metrics(
@@ -129,22 +129,16 @@ class PlanEvaluator:  # evaluator for planning
         # plot trajs
         if self.wm.decoder is not None:
             if hasattr(self.wm, 'has_bisim') and self.wm.has_bisim:
-                with torch.no_grad():
-                    # temporarily disable bisimulation to get DINOv2 embeddings
-                    original_has_bisim = self.wm.has_bisim
-                    self.wm.has_bisim = False
-                    i_z_obses_dinov2, _ = self.wm.rollout(
-                        obs_0=trans_obs_0,
-                        act=actions,
-                    )
-                    self.wm.has_bisim = original_has_bisim  # Restore bisimulation flag
-                i_visuals = self.wm.decode_obs(i_z_obses_dinov2)[0]["visual"]
+                max_action_len = int(action_len.max()) if isinstance(action_len, np.ndarray) else int(action_len)
+                b = e_visuals.shape[0]
+                h, w, c = e_visuals.shape[2], e_visuals.shape[3], e_visuals.shape[4]
+                i_visuals = torch.zeros(b, max_action_len + 1, h, w, c, device=self.device, dtype=torch.float32)
             else:
                 # no bisimulation: use the regular rollout embeddings
                 i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
-            i_visuals = self._mask_traj(
-                i_visuals, action_len + 1
-            )  # we have action_len + 1 states
+                i_visuals = self._mask_traj(
+                    i_visuals, action_len + 1
+                )  # we have action_len + 1 states
             e_visuals = self.preprocessor.transform_obs_visual(e_visuals)
             e_visuals = self._mask_traj(e_visuals, action_len * self.frameskip + 1)
             self._plot_rollout_compare(
@@ -171,7 +165,8 @@ class PlanEvaluator:  # evaluator for planning
         successes = eval_results['success']
 
         logs = {
-            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(value.astype(float))
+            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(
+                value.astype(float))
             for key, value in eval_results.items()
         }
 
@@ -186,7 +181,10 @@ class PlanEvaluator:  # evaluator for planning
         e_obs = move_to_device(self.preprocessor.transform_obs(e_obs), self.device)
         e_z_obs = self.wm.encode_obs(e_obs)
         if hasattr(self.wm, 'has_bisim') and self.wm.has_bisim:
-            e_z_obs["visual"] = self.wm.encode_bisim(e_z_obs)
+            if hasattr(self.wm, 'bypass_dinov2') and self.wm.bypass_dinov2:
+                e_z_obs["visual"] = self.wm.encode_bisim(e_obs)
+            else:
+                e_z_obs["visual"] = self.wm.encode_bisim(e_z_obs)
         div_visual_emb = torch.norm(e_z_obs["visual"] - i_z_obs["visual"]).item()
         div_proprio_emb = torch.norm(e_z_obs["proprio"] - i_z_obs["proprio"]).item()
 
@@ -195,7 +193,7 @@ class PlanEvaluator:  # evaluator for planning
             "mean_proprio_dist": mean_proprio_dist,
             "mean_div_visual_emb": div_visual_emb,
             "mean_div_proprio_emb": div_proprio_emb,
-                })
+        })
 
         return logs, successes
 
