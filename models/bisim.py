@@ -61,9 +61,26 @@ class BisimModel(nn.Module):
         self.patch_emb_dim = patch_emb_dim
 
         if bypass_dinov2:
-            # direct encoding: raw observations -> bisim
-            actual_input_dim = 3 * img_size * img_size
-            self.encoder = build_mlp(actual_input_dim, hidden_dim, latent_dim, num_hidden_layers)
+            # raw patch pixels -> bisim
+            # dinov2 uses patch_size=16 for 224x224 images: 224/16 = 14 patches per side -> 14x14 = 196 patches
+            # each patch: 16x16x3 = 768 dimensions
+            patch_size = 16  # DINOv2 patch size
+            patch_pixel_dim = 3 * patch_size * patch_size  # 768
+            
+            # Linear -> ResBlock -> Linear
+            middle_dim = 2 * self.patch_dim
+            self.encoder = nn.Sequential(
+                nn.Linear(patch_pixel_dim, middle_dim),  # 768 -> middle_dim
+                ResBlock(middle_dim),
+                nn.Linear(middle_dim, self.patch_dim),  # middle_dim -> patch_dim
+            )
+            
+            # spatial positional embedding for output patches
+            self.spatial_pos_emb = nn.Parameter(torch.randn(num_patches, self.patch_dim))
+            
+            # layer norm after projection
+            self.proj_norm = nn.LayerNorm(self.patch_dim)
+            self.patch_size = patch_size
         else:
             # 384 -> 128 -> ResBlock(128) -> patch_dim
             middle_dim = 2 * self.patch_dim
@@ -154,12 +171,21 @@ class BisimModel(nn.Module):
         """
         if self.bypass_dinov2:
             b, t, c, h, w = input_data.shape
-            input_flat = input_data.reshape(b * t, c * h * w)
-            z_bisim = self.encoder(input_flat)  # (b*t, latent_dim)
-            z_bisim = z_bisim.reshape(b, t, self.latent_dim)
-            # (b, t, latent_dim) -> (b, t, num_patches, patch_dim)
-            z_bisim = z_bisim.unsqueeze(2).expand(b, t, self.num_patches, self.patch_dim)
-            event = "bisim_encode_direct"
+            
+            patch_size = self.patch_size
+            num_patches_h = h // patch_size  # 14
+            num_patches_w = w // patch_size  # 14
+            
+            patches = input_data.reshape(b, t, c, num_patches_h, patch_size, num_patches_w, patch_size)
+            patches = patches.permute(0, 1, 3, 5, 2, 4, 6)
+            patches = patches.reshape(b, t, num_patches_h * num_patches_w, c, patch_size, patch_size)
+            patches = patches.reshape(b, t, self.num_patches, c * patch_size * patch_size)
+            
+            z_bisim = self.encoder(patches)  # (b, t, num_patches, patch_dim)
+            z_bisim = z_bisim + self.spatial_pos_emb.unsqueeze(0).unsqueeze(0)  # broadcast over batch and time
+            z_bisim = self.proj_norm(z_bisim)
+            
+            event = "bisim_encode_direct_patches"
 
         else:
             # apply per-token encoding: 384 -> patch_dim

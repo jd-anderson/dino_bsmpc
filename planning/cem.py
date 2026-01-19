@@ -79,7 +79,10 @@ class CEMPlanner(BasePlanner):
             if not hasattr(self, '_bisim_goal_logged'):
                 print(f"[CEM] Planning in bisimulation space (goal encoded, patch_dim={self.wm.bisim_patch_dim})")
                 self._bisim_goal_logged = True
-            z_obs_g["visual"] = self.wm.encode_bisim(z_obs_g)
+            if hasattr(self.wm, 'bypass_dinov2') and self.wm.bypass_dinov2:
+                z_obs_g["visual"] = self.wm.encode_bisim(trans_obs_g)
+            else:
+                z_obs_g["visual"] = self.wm.encode_bisim(z_obs_g)
 
         mu, sigma = self.init_mu_sigma(obs_0, actions)
         mu, sigma = mu.to(self.device), sigma.to(self.device)
