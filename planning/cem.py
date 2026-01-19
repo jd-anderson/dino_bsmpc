@@ -7,22 +7,22 @@ from utils import move_to_device
 
 class CEMPlanner(BasePlanner):
     def __init__(
-        self,
-        horizon,
-        topk,
-        num_samples,
-        var_scale,
-        opt_steps,
-        eval_every,
-        wm,
-        action_dim,
-        objective_fn,
-        preprocessor,
-        evaluator,
-        wandb_run,
-        logging_prefix="plan_0",
-        log_filename="logs.json",
-        **kwargs,
+            self,
+            horizon,
+            topk,
+            num_samples,
+            var_scale,
+            opt_steps,
+            eval_every,
+            wm,
+            action_dim,
+            objective_fn,
+            preprocessor,
+            evaluator,
+            wandb_run,
+            logging_prefix="plan_0",
+            log_filename="logs.json",
+            **kwargs,
     ):
         super().__init__(
             wm,
@@ -105,11 +105,11 @@ class CEMPlanner(BasePlanner):
                     for key, arr in z_obs_g.items()
                 }
                 action = (
-                    torch.randn(self.num_samples, self.horizon, self.action_dim).to(
-                        self.device
-                    )
-                    * sigma[traj]
-                    + mu[traj]
+                        torch.randn(self.num_samples, self.horizon, self.action_dim).to(
+                            self.device
+                        )
+                        * sigma[traj]
+                        + mu[traj]
                 )
                 action[0] = mu[traj]  # optional: make the first one mu itself
                 with torch.no_grad():
@@ -130,7 +130,7 @@ class CEMPlanner(BasePlanner):
             )
             if self.evaluator is not None and i % self.eval_every == 0:
                 logs, successes, _, _ = self.evaluator.eval_actions(
-                    mu, filename=f"{self.logging_prefix}_output_{i+1}"
+                    mu, filename=f"{self.logging_prefix}_output_{i + 1}"
                 )
                 logs = {f"{self.logging_prefix}/{k}": v for k, v in logs.items()}
                 logs.update({"step": i + 1})

@@ -38,16 +38,16 @@ class ResBlock(nn.Module):
 
 class BisimModel(nn.Module):
     def __init__(
-        self,
-        input_dim,
-        latent_dim,
-        hidden_dim=256,
-        num_hidden_layers=2,
-        action_dim=10,
-        bypass_dinov2=False,
-        img_size=224,
-        num_patches=196,  # number of output patches
-        patch_emb_dim=384,  # DINOv2 patch embedding dimension
+            self,
+            input_dim,
+            latent_dim,
+            hidden_dim=256,
+            num_hidden_layers=2,
+            action_dim=10,
+            bypass_dinov2=False,
+            img_size=224,
+            num_patches=196,  # number of output patches
+            patch_emb_dim=384,  # DINOv2 patch embedding dimension
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -61,23 +61,19 @@ class BisimModel(nn.Module):
         self.patch_emb_dim = patch_emb_dim
 
         if bypass_dinov2:
-            # raw patch pixels -> bisim
-            # dinov2 uses patch_size=16 for 224x224 images: 224/16 = 14 patches per side -> 14x14 = 196 patches
-            # each patch: 16x16x3 = 768 dimensions
             patch_size = 16  # DINOv2 patch size
             patch_pixel_dim = 3 * patch_size * patch_size  # 768
-            
-            # Linear -> ResBlock -> Linear
+
             middle_dim = 2 * self.patch_dim
             self.encoder = nn.Sequential(
                 nn.Linear(patch_pixel_dim, middle_dim),  # 768 -> middle_dim
                 ResBlock(middle_dim),
                 nn.Linear(middle_dim, self.patch_dim),  # middle_dim -> patch_dim
             )
-            
+
             # spatial positional embedding for output patches
             self.spatial_pos_emb = nn.Parameter(torch.randn(num_patches, self.patch_dim))
-            
+
             # layer norm after projection
             self.proj_norm = nn.LayerNorm(self.patch_dim)
             self.patch_size = patch_size
@@ -171,20 +167,19 @@ class BisimModel(nn.Module):
         """
         if self.bypass_dinov2:
             b, t, c, h, w = input_data.shape
-            
+
             patch_size = self.patch_size
             num_patches_h = h // patch_size  # 14
             num_patches_w = w // patch_size  # 14
-            
+
             patches = input_data.reshape(b, t, c, num_patches_h, patch_size, num_patches_w, patch_size)
             patches = patches.permute(0, 1, 3, 5, 2, 4, 6)
             patches = patches.reshape(b, t, num_patches_h * num_patches_w, c, patch_size, patch_size)
             patches = patches.reshape(b, t, self.num_patches, c * patch_size * patch_size)
-            
+
             z_bisim = self.encoder(patches)  # (b, t, num_patches, patch_dim)
             z_bisim = z_bisim + self.spatial_pos_emb.unsqueeze(0).unsqueeze(0)  # broadcast over batch and time
             z_bisim = self.proj_norm(z_bisim)
-            
             event = "bisim_encode_direct_patches"
 
         else:
@@ -374,7 +369,7 @@ class BisimModel(nn.Module):
         Z_centered = Z - Z.mean(dim=0, keepdim=True)
 
         # PCA via SVD
-        U, S, Vt = torch.linalg.svd(Z_centered, full_matrices=False) # check  Vt or V
+        U, S, Vt = torch.linalg.svd(Z_centered, full_matrices=False)  # check  Vt or V
         V = Vt.T  # (n_patches*patch_dim, n_patches*patch_dim)
 
         self.PCAMatrix = V.detach()
@@ -499,7 +494,7 @@ class BisimModel(nn.Module):
             var_loss = self.calc_var_loss(z_bisim, next_z_bisim, VC_target, epsilon=0.1)
         else:
             var_loss = self.calc_PCAVar_loss(z_bisim, next_z_bisim, PCA1_loss_target, VC_target, num_pcs)
-        
+
         # 5. compute covariance regularization
         cov_reg = self.compute_covariance_regularization(z_bisim, next_z_bisim)
         cov_reg = cov_reg.unsqueeze(1).expand(-1, r_dist.shape[1])  # (b, t)

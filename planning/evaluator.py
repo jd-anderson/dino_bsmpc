@@ -116,8 +116,8 @@ class PlanEvaluator:  # evaluator for planning
         e_visuals = e_obses["visual"]
         e_final_obs = self._get_trajdict_last(e_obses, action_len * self.frameskip + 1)
         e_final_state = self._get_traj_last(e_states, action_len * self.frameskip + 1)[
-                        :, 0
-                        ]  # reduce dim back
+            :, 0
+        ]  # reduce dim back
 
         # compute eval metrics
         logs, successes = self._compute_rollout_metrics(
@@ -165,7 +165,8 @@ class PlanEvaluator:  # evaluator for planning
         successes = eval_results['success']
 
         logs = {
-            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(value.astype(float))
+            f"success_rate" if key == "success" else f"mean_{key}": np.mean(value) if key != "success" else np.mean(
+                value.astype(float))
             for key, value in eval_results.items()
         }
 
@@ -192,7 +193,7 @@ class PlanEvaluator:  # evaluator for planning
             "mean_proprio_dist": mean_proprio_dist,
             "mean_div_visual_emb": div_visual_emb,
             "mean_div_proprio_emb": div_proprio_emb,
-                })
+        })
 
         return logs, successes
 

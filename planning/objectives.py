@@ -41,7 +41,7 @@ def create_objective_fn(alpha, base, mode="last"):
             loss: tensor (B, )
         """
         coeffs = np.array(
-            [base**i for i in range(z_obs_pred["visual"].shape[1])], dtype=np.float32
+            [base ** i for i in range(z_obs_pred["visual"].shape[1])], dtype=np.float32
         )
         coeffs = torch.tensor(coeffs / np.sum(coeffs)).to(z_obs_pred["visual"].device)
         loss_visual = metric(z_obs_pred["visual"], z_obs_tgt["visual"]).mean(
