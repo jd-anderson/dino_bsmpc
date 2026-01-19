@@ -47,7 +47,7 @@ class BisimModel(nn.Module):
             bypass_dinov2=False,
             img_size=224,
             num_patches=196,  # number of output patches
-            patch_emb_dim=384,  # DINOv2 patch embedding dimension
+            patch_emb_dim=384,  # encoder patch embedding dimension (384 for DINOv2, 768 for SimDINOv2)
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -78,7 +78,7 @@ class BisimModel(nn.Module):
             self.proj_norm = nn.LayerNorm(self.patch_dim)
             self.patch_size = patch_size
         else:
-            # 384 -> 128 -> ResBlock(128) -> patch_dim
+            # patch_emb_dim -> middle_dim -> ResBlock -> patch_dim
             middle_dim = 2 * self.patch_dim
             self.encoder = nn.Sequential(
                 nn.Linear(patch_emb_dim, middle_dim),
@@ -183,7 +183,7 @@ class BisimModel(nn.Module):
             event = "bisim_encode_direct_patches"
 
         else:
-            # apply per-token encoding: 384 -> patch_dim
+            # apply per-token encoding: patch_emb_dim -> patch_dim
             z_bisim = self.encoder(input_data)  # (b, t, 196, patch_dim)
 
             # add spatial positional embeddings
