@@ -43,4 +43,4 @@ objective:
 
 point_maze_env:
   _target_: env.pointmaze.maze_model.point_maze
-  background: no_change
+  background: default

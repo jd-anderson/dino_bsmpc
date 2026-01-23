@@ -112,8 +112,10 @@ class VWorldModel(nn.Module):
         print("Model emb_dim: ", self.emb_dim)
 
         # DINOv2 (vits14) needs image resizing to match decoder scale
-        # SimDINOv2 (vitb16) uses 224x224 directly without resizing
-        if "dino" in self.encoder.name and "simdino" not in self.encoder.name:
+        # SimDINOv2 (vitb16) and IBOT (vits16) use 224x224 directly without resizing
+        is_dinov2 = "dino" in self.encoder.name and "simdino" not in self.encoder.name
+        is_ibot = "ibot" in self.encoder.name
+        if is_dinov2 and not is_ibot:
             decoder_scale = 16  # from vqvae
             num_side_patches = image_size // decoder_scale
             self.encoder_image_size = num_side_patches * encoder.patch_size

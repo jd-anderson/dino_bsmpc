@@ -1,6 +1,6 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MultipleLocator
 import argparse
 import os
 import sys
@@ -21,6 +21,7 @@ def main():
 
     # Load CSV
     df = pd.read_csv(csv_path)
+    df = df[df["epoch"] < 50]
 
     # Training metrics
     train_metrics = [
@@ -30,18 +31,32 @@ def main():
         "train_bisim_var_loss", "train_bisim_transition_dist", "train_bisim_cov_reg"
     ]
 
+    labels = {
+        "train_loss": 'Training Loss',
+        "train_z_proprio_loss": 'Proprio Loss',
+        "train_standard_l2_loss": 'L2 Loss',
+        "train_bisim_loss": 'Bisimulation Loss', 
+        "train_bisim_z_dist": 'Bisimulation Distance',
+        "train_bisim_r_dist": 'Reward Distance',
+        "train_bisim_transition_dist": 'Transition Distance', 
+        "train_bisim_var_loss": 'Variance Loss',
+        "train_bisim_cov_reg": 'Coveriance Regularization'
+    }
+
     plt.figure(figsize=(12,7))
     for metric in train_metrics:
-        plt.plot(df["epoch"], df[metric], label=metric)
+        plt.plot(df["epoch"], df[metric], label=labels[metric])
 
     plt.xlabel("Epoch")
     plt.ylabel("Value")
     plt.title("Training Metrics")
-    plt.legend()
+    plt.yscale('log')
+    plt.legend(bbox_to_anchor=(0.5, -0.15), loc='upper center', ncol=3)
     plt.grid(True)
-    plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
+    plt.gca().xaxis.set_major_locator(MultipleLocator(5))
+    plt.tight_layout()
     train_png_path = os.path.join(base_dir, "train_loss_metrics.png")
-    plt.savefig(train_png_path)
+    plt.savefig(train_png_path, bbox_inches='tight')
     plt.close()
     print(f"Saved training loss plot to {train_png_path}")
 
@@ -55,16 +70,19 @@ def main():
 
     plt.figure(figsize=(12,7))
     for metric in val_metrics:
-        plt.plot(df["epoch"], df[metric], label=metric)
+        label = metric.replace("val_", "")
+        plt.plot(df["epoch"], df[metric], label=label)
 
     plt.xlabel("Epoch")
     plt.ylabel("Value")
     plt.title("Validation Metrics")
-    plt.legend()
+    plt.yscale('log')
+    plt.legend(bbox_to_anchor=(0.5, -0.15), loc='upper center', ncol=3)
     plt.grid(True)
-    plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
+    plt.gca().xaxis.set_major_locator(MultipleLocator(5))
+    plt.tight_layout()
     val_png_path = os.path.join(base_dir, "val_loss_metrics.png")
-    plt.savefig(val_png_path)
+    plt.savefig(val_png_path, bbox_inches='tight')
     plt.close()
     print(f"Saved validation loss plot to {val_png_path}")
 
