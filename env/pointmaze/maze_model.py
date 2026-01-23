@@ -181,11 +181,9 @@ class MazeEnv(mujoco_env.MujocoEnv, utils.EzPickle, offline_env.OfflineEnv):
                  reset_target=True,
                  return_value='state', # 'obs' or 'state'
                  with_target= False,
-                 #MOD1
                  background_builtin="checker",
                  background_rgb1="0.2 0.3 0.4", 
                  background_rgb2="0.1 0.2 0.3",
-                 #
                  **kwargs):
         offline_env.OfflineEnv.__init__(self, **kwargs)
         self.with_target = with_target

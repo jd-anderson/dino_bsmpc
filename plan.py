@@ -490,13 +490,19 @@ def planning_main(cfg_dict):
     )
     model = load_model(model_ckpt, model_cfg, num_action_repeat, device=device)
 
+    env_kwargs = dict(model_cfg.env.kwargs) if model_cfg.env.kwargs else {}
+    if model_cfg.env.name == "point_maze" and "point_maze_env" in cfg_dict:
+        background = cfg_dict.get("point_maze_env", {}).get("background")
+        if background:
+            env_kwargs["background"] = background
+
     # use dummy vector env for wall and deformable envs
     if model_cfg.env.name == "wall" or model_cfg.env.name == "deformable_env":
         from env.serial_vector_env import SerialVectorEnv
         env = SerialVectorEnv(
             [
                 gym.make(
-                    model_cfg.env.name, *model_cfg.env.args, **model_cfg.env.kwargs
+                    model_cfg.env.name, *model_cfg.env.args, **env_kwargs
                 )
                 for _ in range(cfg_dict["n_evals"])
             ]
@@ -505,7 +511,7 @@ def planning_main(cfg_dict):
         env = SubprocVectorEnv(
             [
                 lambda: gym.make(
-                    model_cfg.env.name, *model_cfg.env.args, **model_cfg.env.kwargs
+                    model_cfg.env.name, *model_cfg.env.args, **env_kwargs
                 )
                 for _ in range(cfg_dict["n_evals"])
             ]

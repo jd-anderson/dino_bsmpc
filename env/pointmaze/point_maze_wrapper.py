@@ -14,16 +14,31 @@ STATE_RANGES = np.array([
 ])
 
 class PointMazeWrapper(MazeEnv):
-    def __init__(self, **kwargs):
-        # MOD 1 Background change
-        if hasattr(kwargs, 'background_builtin'):
-            super().__init__(**kwargs, 
-                background_builtin=kwargs.get('background_builtin'),
-                background_rgb1=kwargs.get('background_rgb1'),
-                background_rgb2=kwargs.get('background_rgb2')
-                )
-        else:
-            super().__init__(**kwargs)
+    def __init__(self, background='default', **kwargs):
+        background_configs = {
+            'default': {
+                'background_builtin': 'checker',
+                'background_rgb1': '0.2 0.3 0.4',
+                'background_rgb2': '0.1 0.2 0.3'
+            },
+            'slight_change': {
+                'background_builtin': 'checker',
+                'background_rgb1': '0.4 0.5 0.6',
+                'background_rgb2': '0.3 0.4 0.5'
+            },
+            'gradient': {
+                'background_builtin': 'gradient',
+                'background_rgb1': '0.2 0.3 0.4',
+                'background_rgb2': '0.1 0.2 0.3'
+            }
+        }
+        if background not in background_configs:
+            raise ValueError(
+                f"Unknown background: {background}. Must be one of: {list(background_configs.keys())}"
+            )
+        kwargs.update(background_configs[background])
+        
+        super().__init__(**kwargs)
         self.action_dim = self.action_space.shape[0]
         print("."*50)
         print(kwargs)

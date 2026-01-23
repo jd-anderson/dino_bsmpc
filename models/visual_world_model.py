@@ -77,16 +77,20 @@ class VWorldModel(nn.Module):
 
             if self.use_memory_buffer:
                 action_emb_dim = getattr(action_encoder, 'emb_dim', action_dim)
+                # calculate num_patches
+                decoder_scale = 16
+                num_side_patches = image_size // decoder_scale
+                num_patches = num_side_patches ** 2
                 self.register_buffer('bisim_memory_states',
-                                     torch.zeros(bisim_memory_buffer_size, num_hist, 196, self.bisim_patch_dim))
+                                     torch.zeros(bisim_memory_buffer_size, num_hist, num_patches, self.bisim_patch_dim))
                 self.register_buffer('bisim_memory_next_states',
-                                     torch.zeros(bisim_memory_buffer_size, num_hist, 196, self.bisim_patch_dim))
+                                     torch.zeros(bisim_memory_buffer_size, num_hist, num_patches, self.bisim_patch_dim))
                 self.register_buffer('bisim_memory_actions',
                                      torch.zeros(bisim_memory_buffer_size, num_hist, action_emb_dim))
                 self.register_buffer('bisim_memory_rewards', torch.zeros(bisim_memory_buffer_size, num_hist, 1))
                 self.register_buffer('bisim_memory_ptr', torch.zeros(1, dtype=torch.long))
                 self.register_buffer('bisim_memory_full', torch.zeros(1, dtype=torch.bool))
-                print(f"Initialized bisimulation memory buffer with size {bisim_memory_buffer_size}")
+                print(f"Initialized bisimulation memory buffer with size {bisim_memory_buffer_size}, num_patches={num_patches}")
             else:
                 print("Bisimulation memory buffer disabled (size=0)")
         else:
@@ -107,16 +111,22 @@ class VWorldModel(nn.Module):
         assert concat_dim == 0 or concat_dim == 1, f"concat_dim {concat_dim} not supported."
         print("Model emb_dim: ", self.emb_dim)
 
-        if "dino" in self.encoder.name:
+        # DINOv2 (vits14) needs image resizing to match decoder scale
+        # SimDINOv2 (vitb16) and IBOT (vits16) use 224x224 directly without resizing
+        is_dinov2 = "dino" in self.encoder.name and "simdino" not in self.encoder.name
+        is_ibot = "ibot" in self.encoder.name
+        if is_dinov2 and not is_ibot:
             decoder_scale = 16  # from vqvae
             num_side_patches = image_size // decoder_scale
             self.encoder_image_size = num_side_patches * encoder.patch_size
             self.encoder_transform = transforms.Compose(
                 [transforms.Resize(self.encoder_image_size)]
             )
+            print(f"DINOv2 encoder: resizing images to {self.encoder_image_size}x{self.encoder_image_size}")
         else:
-            # set self.encoder_transform to identity transform
+            self.encoder_image_size = image_size
             self.encoder_transform = lambda x: x
+            print(f"Encoder {self.encoder.name}: using original image size {image_size}x{image_size}")
 
         self.decoder_criterion = nn.MSELoss()
         self.decoder_latent_loss_weight = 0.25

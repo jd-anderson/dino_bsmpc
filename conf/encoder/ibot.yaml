@@ -1,0 +1,4 @@
+_target_: models.ibot.IBOTEncoder
+name: "ibot_vits16"
+checkpoint_path: "ibot/checkpoints/ibot_checkpoint_teacher.pth"
+feature_key: "x_norm_patchtokens"

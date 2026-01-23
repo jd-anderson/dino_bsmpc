@@ -3,3 +3,5 @@ __pycache__
 *.pyc
 outputs
 plan_outputs
+SimDINO
+ibot

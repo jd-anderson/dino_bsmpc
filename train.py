@@ -322,12 +322,13 @@ class Trainer:
         # Initialize bisimulation model
         if self.cfg.get('has_bisim', False):
             if self.bisim_model is None:
-                if self.encoder.latent_ndim == 1:  # if feature is 1D
+                decoder_scale = 16  # from vqvae
+                num_side_patches = self.cfg.img_size // decoder_scale
+                num_patches = num_side_patches ** 2
+                
+                if self.encoder.latent_ndim == 1:  # if feature is 1D - CLS token, not used
                     input_dim = self.encoder.emb_dim
                 else:
-                    decoder_scale = 16  # from vqvae
-                    num_side_patches = self.cfg.img_size // decoder_scale
-                    num_patches = num_side_patches ** 2
                     input_dim = num_patches * self.encoder.emb_dim
 
                 print(
@@ -343,16 +344,17 @@ class Trainer:
                     action_dim=self.cfg.action_emb_dim,
                     bypass_dinov2=self.cfg.model.get('bypass_dinov2', False),
                     img_size=self.cfg.img_size,
-                    num_patches=196,
-                    patch_emb_dim=384,
+                    num_patches=num_patches,
+                    patch_emb_dim=self.encoder.emb_dim,  # 384 for DINOv2, 768 for SimDINOv2
                 )
                 bypass_mode = self.cfg.model.get('bypass_dinov2', False)
                 log.info(f"Initialized bisimulation model with latent dim {self.cfg.get('bisim_latent_dim', 64)}")
-                log.info(f"Bypass DinoV2 mode: {bypass_mode}")
+                log.info(f"Bypass encoder mode: {bypass_mode}")
+                encoder_name = getattr(self.encoder, 'name', 'encoder')
                 if bypass_mode:
-                    log.info("Training obs -> bisim directly, bypassing DinoV2 embeddings")
+                    log.info("Training obs -> bisim directly, bypassing encoder embeddings")
                 else:
-                    log.info("Training obs -> DinoV2 -> bisim")
+                    log.info(f"Training obs -> {encoder_name} -> bisim")
 
             if not self.train_bisim:
                 for param in self.bisim_model.parameters():

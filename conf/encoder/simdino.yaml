@@ -1,0 +1,4 @@
+_target_: models.simdino.SimDINOv2Encoder
+name: "simdinov2_vitb16_reg4"
+checkpoint_path: "SimDINO/simdinov2/checkpoints/vitb16_reg4_SimDNIOv2_ep100.pth"
+feature_key: "x_norm_patchtokens"
