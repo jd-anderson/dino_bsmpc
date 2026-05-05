@@ -72,6 +72,8 @@ def point_maze(maze_str, background_builtin="checker", background_rgb1="0.2 0.3 
     particle.joint(name='ball_x', type='slide', pos=[0,0,0], axis=[1,0,0])
     particle.joint(name='ball_y', type='slide', pos=[0,0,0], axis=[0,1,0])
 
+    worldbody.site(name='distractor_site', pos=[2.0, 2.0, 0.02], size=0.2, rgba='0 0 0 1')
+    worldbody.site(name='distractor_site_2', pos=[2.5, 2.5, 0.02], size=0.2, rgba='0 0 0 1')
     worldbody.site(name='target_site', pos=[0.0,0.0,0], size=0.2, material='target')
 
     width, height = maze_arr.shape
@@ -195,7 +197,12 @@ class MazeEnv(mujoco_env.MujocoEnv, utils.EzPickle, offline_env.OfflineEnv):
         self.reset_locations.sort()
 
         self._target = np.array([0.0,0.0])
-        self.return_value = return_value
+        
+        # Temporarily set return_value='state' during MujocoEnv.__init__ to prevent
+        # uint8 observation space inference issues. MujocoEnv calls step() during init,
+        # and when return_value='obs', step() returns uint8 images which can't have
+        # infinite bounds in Box spaces.
+        self.return_value = 'state'  # Temporarily use 'state' for init
                 
         model = point_maze(maze_spec, 
             #MOD1
@@ -208,6 +215,8 @@ class MazeEnv(mujoco_env.MujocoEnv, utils.EzPickle, offline_env.OfflineEnv):
             mujoco_env.MujocoEnv.__init__(self, model_path=f.name, frame_skip=5)
         utils.EzPickle.__init__(self)
         
+        # Now restore the actual return_value and set correct observation_space
+        self.return_value = return_value
         if self.return_value == 'obs':
             self.observation_space = gym.spaces.Box(
                 low=0,               
@@ -225,7 +234,8 @@ class MazeEnv(mujoco_env.MujocoEnv, utils.EzPickle, offline_env.OfflineEnv):
             raise ValueError("More than 1 goal specified!")
         else:
             # If no goal, use the first empty tile
-            self.set_target(np.array(self.reset_locations[0]).astype(self.observation_space.dtype))
+            # Use float64 for coordinates, not observation_space dtype
+            self.set_target(np.array(self.reset_locations[0]).astype(np.float64))
         self.empty_and_goal_locations = self.reset_locations + self.goal_locations
         
         self.seed()

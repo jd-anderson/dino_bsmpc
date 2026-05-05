@@ -90,7 +90,11 @@ model:
   train_w_std_loss: True
   train_w_reward_loss: False
 
-debug: False 
+debug: False
+
+domain_randomization:
+  enabled: False
+  dr_data_path: ${oc.env:DATASET_DIR}/point_maze_dr
 
 # Planning params for planning eval jobs launched during training
 plan_settings: 

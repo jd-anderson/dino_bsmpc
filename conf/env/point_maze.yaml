@@ -11,6 +11,8 @@ dataset:
   transform:
     _target_: "datasets.img_transforms.default_transform"
     img_size: ${img_size}
+  use_dr: ${domain_randomization.enabled}
+  dr_data_path: ${domain_randomization.dr_data_path}
 
 decoder_path: null
 num_workers: 16
