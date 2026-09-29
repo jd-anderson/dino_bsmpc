@@ -1,0 +1,20 @@
+{
+  "description": "PushT final checkpoints (symlinks to model_latest.pth + hydra.yaml where available)",
+  "plan_usage": {
+    "ckpt_base_path": "checkpoints/pusht",
+    "example": "model_name=dinowm_n1000  (resolves to checkpoints/pusht/outputs/dinowm_n1000/checkpoints/model_latest.pth)"
+  },
+  "missing_local": [],
+  "runs": [
+    {"tag": "dinowm_n1000", "method": "DINO-WM", "n_rollout": 1000, "source": "anderson_archive/outputs/2026-07-01/16-35-19"},
+    {"tag": "dinowm_n5000", "method": "DINO-WM", "n_rollout": 5000, "source": "anderson_archive/outputs/by_tag/dinowm_n5000", "epoch": 50},
+    {"tag": "dinobisim_n1000", "method": "DINO-Bisim (prev)", "n_rollout": 1000, "source": "anderson_archive/outputs/2026-06-26/23-30-32"},
+    {"tag": "dinowm_nfull", "method": "DINO-WM", "n_rollout": "full", "source": "anderson_archive/outputs/2026-07-01/16-29-44"},
+    {"tag": "dinobisim_n5000", "method": "DINO-Bisim", "n_rollout": 5000, "source": "anderson_archive/modal_to_anderson/dinobisim_n5000"},
+    {"tag": "bisim_n5000", "method": "DINO-Bisim (Anderson)", "n_rollout": 5000, "source": "anderson_archive/outputs/2026-07-01/16-29-01"},
+    {"tag": "dinobisim_nfull", "method": "DINO-Bisim", "n_rollout": "full", "source": "anderson_archive/modal_to_anderson/dinobisim_nfull"},
+    {"tag": "dinobisim_prev_full", "method": "DINO-Bisim (prev capitalone)", "n_rollout": "full", "source": "checkpoints_captialone/push-T randomized/new_pushT90", "epoch": 90},
+    {"tag": "2026-07-01/16-35-19", "alias_of": "dinowm_n1000"},
+    {"tag": "2026-06-26/23-30-32", "alias_of": "dinobisim_n1000"}
+  ]
+}
