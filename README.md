@@ -2,7 +2,7 @@
 
 [[Paper]](https://arxiv.org/abs/2602.18639)
 
-Leonardo F. Toso\*, Davit Shadunts\*, Yunyang Lu\*, Nihal Sharma, Donglin Zhan, Nam H. Nguyen, James Anderson
+Leonardo F. Toso\*, Davit Shadunts\*, Yunyang Lu\*, Longling Geng\*, Nihal Sharma, Donglin Zhan, Nam H. Nguyen, James Anderson
 
 Columbia University, Capital One
 
