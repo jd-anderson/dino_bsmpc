@@ -5,3 +5,15 @@ outputs
 plan_outputs
 SimDINO
 ibot
+
+datasets/data/
+data/
+*.pth
+checkpoints/*
+!checkpoints/pusht/
+.venv/
+.venv_train/
+wandb/
+
+# After *.pth: allow tracking pusht checkpoints
+!checkpoints/pusht/**/*.pth

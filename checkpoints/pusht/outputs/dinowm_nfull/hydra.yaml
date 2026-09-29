@@ -1,0 +1,130 @@
+ckpt_base_path: ./
+wandb_display_name: dinowm_nfull
+regularization: pca
+vicreg_inv_coef: 25.0
+vicreg_var_coef: 25.0
+vicreg_cov_coef: 1.0
+vicreg_std_min: 1.0
+sigreg_sketch_dim: 64
+training:
+  seed: 0
+  epochs: 50
+  batch_size: 20
+  save_every_x_epoch: 1
+  reconstruct_every_x_batch: 500
+  num_reconstruct_samples: 6
+  log_image_mosaics_to_wandb: true
+  log_ground_truth_mosaic: true
+  encoder_lr: 5.0e-07
+  decoder_lr: 0.0003
+  predictor_lr: 1.0e-05
+  action_encoder_lr: 0.0001
+  bisim_lr: 5.0e-07
+img_size: 224
+frameskip: 5
+concat_dim: 1
+normalize_action: true
+action_emb_dim: 10
+num_action_repeat: 1
+proprio_emb_dim: 10
+num_proprio_repeat: 1
+has_bisim: false
+bisim_latent_dim: 32
+bisim_hidden_dim: 256
+bisim_pos_encoding: grid_mlp
+bisim_pos_hidden_dim: 256
+bisim_coef: 1
+train_dinowm_aux: false
+dinowm_coef: 1.0
+train_dinowm_predictor: false
+var_loss_coef: 1
+PCA1_loss_target: 0.0001
+VC_target: 0.5
+num_pcs: 10
+PCAloss_epoch: 50
+bisim_memory_buffer_size: 1000
+bisim_comparison_size: 200
+bisim_transition_target: predictor
+bisim_latent_metric: l2
+num_hist: 3
+num_pred: 1
+has_predictor: true
+has_decoder: false
+accelerate_launch: false
+model:
+  _target_: models.visual_world_model.VWorldModel
+  image_size: 224
+  num_hist: 3
+  num_pred: 1
+  train_encoder: false
+  train_predictor: true
+  train_decoder: true
+  train_bisim: false
+  bypass_dinov2: false
+  train_w_std_loss: true
+  train_w_reward_loss: false
+debug: false
+plan_settings:
+  plan_cfg_path: null
+  planner:
+  - gd
+  - cem
+  goal_source:
+  - dset
+  - random_state
+  goal_H:
+  - 5
+  alpha:
+  - 0.1
+  - 1
+env:
+  name: pusht
+  args: []
+  kwargs:
+    with_velocity: true
+    with_target: true
+  dataset:
+    _target_: datasets.pusht_dset.load_pusht_slice_train_val
+    with_velocity: true
+    n_rollout: null
+    normalize_action: true
+    data_path: /home/gloria/Bis-JEPA/datasets/data/pusht_noise
+    split_ratio: 0.9
+    transform:
+      _target_: datasets.img_transforms.default_transform
+      img_size: 224
+  decoder_path: null
+  num_workers: 16
+encoder:
+  _target_: models.dino.DinoV2Encoder
+  name: dinov2_vits14
+  feature_key: x_norm_patchtokens
+action_encoder:
+  _target_: models.proprio.ProprioceptiveEmbedding
+  num_frames: 1
+  tubelet_size: 1
+  use_3d_pos: false
+proprio_encoder:
+  _target_: models.proprio.ProprioceptiveEmbedding
+  num_frames: 1
+  tubelet_size: 1
+  use_3d_pos: false
+decoder:
+  _target_: models.vqvae.VQVAE
+  channel: 384
+  n_embed: 2048
+  n_res_block: 4
+  n_res_channel: 128
+  quantize: false
+predictor:
+  _target_: models.vit.ViTPredictor
+  depth: 6
+  heads: 16
+  mlp_dim: 2048
+  dropout: 0.1
+  emb_dropout: 0
+  pool: mean
+saved_folder: /home/gloria/Bis-JEPA/outputs/2026-07-01/16-29-44
+effective_batch_size: 20
+gpu_batch_size: 20
+wandb_run_id: 3b73c7wy
