@@ -1,4 +1,4 @@
-# Learning Invariant Visual Representations for Planning with Joint-Embedding Predictive World Models
+# JEPA-Bisim: Learning Robust Visual Representations for Planning with Joint-Embedding Predictive World Models
 
 [[Paper]](https://arxiv.org/abs/2602.18639)
 
